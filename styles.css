@@ -1,0 +1,219 @@
+/* Habit streak pill that replaces the !STREAK tag.
+   inline-flex lets the flame and number be centred both ways inside the pill.
+   `vertical-align: middle` keeps the pill level with the surrounding text; the
+   small negative nudge compensates for `middle` referencing half the x-height
+   instead of the content-box centre (without it the pill sits ~0.1em low).
+   Override --habit-streak-nudge if a custom font/theme needs a different value. */
+.habit-streak {
+	--habit-streak-nudge: -0.1em;
+
+	/* Checked state: gray pill with bright text. */
+	--habit-streak-bg: var(--color-base-35, #4b4b52);
+	--habit-streak-fg: var(--text-normal, #f4f4f5);
+
+	/* Streak tier colors for the filled flame when checked */
+	--habit-streak-tier-0: var(--habit-streak-fg, #f4f4f5);
+	--habit-streak-tier-30: var(--color-yellow, #d9a900);
+	--habit-streak-tier-90: var(--color-orange, #e8792b);
+	--habit-streak-tier-365: var(--color-red, #e5484d);
+	--habit-streak-tier-1000: var(--color-purple, #8b5cf6);
+
+	/* Active flame color defaults to tier 0 */
+	--habit-streak-flame-color: var(--habit-streak-tier-0);
+
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.25em;
+	box-sizing: border-box;
+	height: 1.5em;
+	padding: 0 0.45em;
+	margin-inline-start: 0.35em;
+	/* Match the corner radius the active theme uses for its own tags. */
+	border-radius: var(--tag-radius, var(--radius-m, 999px));
+	background-color: var(--habit-streak-bg);
+	color: var(--habit-streak-fg);
+	font-size: 0.8em;
+	font-weight: 600;
+	line-height: 1;
+	white-space: nowrap;
+	user-select: none;
+	font-variant-numeric: tabular-nums;
+	vertical-align: middle;
+	position: relative;
+	top: var(--habit-streak-nudge);
+}
+
+/* Flame icon container and SVG */
+.habit-streak .habit-streak-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	line-height: 1;
+	flex-shrink: 0;
+	pointer-events: none;
+}
+
+.habit-streak .habit-streak-icon svg,
+.habit-streak .habit-streak-icon .svg-icon {
+	width: 1.1em;
+	height: 1.1em;
+	display: block;
+	fill: var(--habit-streak-flame-color);
+	stroke: var(--habit-streak-flame-color);
+	stroke-width: 1.5;
+}
+
+.habit-streak .habit-streak-count {
+	display: inline-block;
+	line-height: 1;
+	pointer-events: none;
+}
+
+/* Streak colour tiers when checked: tier color filled flame */
+.habit-streak[data-tier="0"] {
+	--habit-streak-flame-color: var(--habit-streak-tier-0);
+}
+
+.habit-streak[data-tier="30"] {
+	--habit-streak-flame-color: var(--habit-streak-tier-30);
+}
+
+.habit-streak[data-tier="90"] {
+	--habit-streak-flame-color: var(--habit-streak-tier-90);
+}
+
+.habit-streak[data-tier="365"] {
+	--habit-streak-flame-color: var(--habit-streak-tier-365);
+}
+
+.habit-streak[data-tier="1000"] {
+	--habit-streak-flame-color: var(--habit-streak-tier-1000);
+}
+
+/* Unchecked (open) state: darker gray pill with gray flame */
+.habit-streak[data-state="open"],
+.habit-streak[data-state="open"][data-tier] {
+	--habit-streak-bg: var(--color-base-20, #2a2a2f);
+	--habit-streak-fg: var(--text-muted, #9a9aa2);
+	--habit-streak-flame-color: var(--text-muted, #9a9aa2);
+}
+
+/* When streak count is 0: gray outline flame (unfilled) */
+.habit-streak[data-streak="0"] .habit-streak-icon .svg-icon,
+.habit-streak.is-zero .habit-streak-icon svg,
+.habit-streak.is-zero .habit-streak-icon .svg-icon {
+	fill: none !important;
+	stroke: var(--habit-streak-flame-color);
+	stroke-width: 2;
+}
+
+/* Due date and due time pill that replaces tokens like !2026-10-10, !today,
+   !15:30 or !upcoming. Text-only, sized and aligned like the habit pill so the
+   two sit level on the same line. */
+.due-pill {
+	--due-pill-nudge: -0.1em;
+
+	/* Default: further away than this month. */
+	--due-pill-bg: var(--color-base-35, #4b4b52);
+	--due-pill-fg: var(--text-normal, #f4f4f5);
+
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	height: 1.5em;
+	padding: 0 0.5em;
+	margin-inline: 0.15em;
+	border-radius: var(--tag-radius, var(--radius-m, 999px));
+	background-color: var(--due-pill-bg);
+	color: var(--due-pill-fg);
+	font-size: 0.8em;
+	font-weight: 600;
+	line-height: 1;
+	white-space: nowrap;
+	user-select: none;
+	font-variant-numeric: tabular-nums;
+	vertical-align: middle;
+	position: relative;
+	top: var(--due-pill-nudge);
+}
+
+/* Calendar-clock icon on date pills, plain clock on time pills. */
+.due-pill-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	margin-right: 0.35em;
+}
+
+.due-pill-icon svg,
+.due-pill-icon .svg-icon {
+	width: 1.05em;
+	height: 1.05em;
+}
+
+/* Due this month. */
+.due-pill[data-tier="month"] {
+	--due-pill-bg: var(--color-blue, #4b4b52);
+	--due-pill-fg: #f4f4f5;
+}
+
+/* Due later this week (after tomorrow). */
+.due-pill[data-tier="week"] {
+	--due-pill-bg: var(--color-yellow, #d9a900);
+	--due-pill-fg: #1a1a1a;
+}
+
+/* Due tomorrow. */
+.due-pill[data-tier="tomorrow"] {
+	--due-pill-bg: var(--color-orange, #e8792b);
+	--due-pill-fg: #1a1a1a;
+}
+
+/* Due today. */
+.due-pill[data-tier="today"] {
+	--due-pill-bg: var(--color-red, #e5484d);
+	--due-pill-fg: #ffffff;
+}
+
+/* Overdue, including yesterday and a due time that has passed. */
+.due-pill[data-tier="overdue"] {
+	--due-pill-bg: var(--color-purple, #8b5cf6);
+	--due-pill-fg: #ffffff;
+}
+
+/* !upcoming: no specific date yet. */
+.due-pill[data-tier="upcoming"] {
+	--due-pill-bg: var(--color-base-30, #d7d7dc);
+	--due-pill-fg: var(--color-base-100, #2a2a2f);
+}
+
+/* Scheduled time with no due date: same gray style as streaks */
+.due-pill[data-tier="time-scheduled"] {
+	--due-pill-bg: var(--color-base-35, #4b4b52);
+	--due-pill-fg: var(--text-normal, #f4f4f5);
+}
+
+/* Completed tasks: green pill showing the completion date. */
+.due-pill[data-tier="completed"] {
+	--due-pill-bg: var(--color-green, #2f9e57);
+	--due-pill-fg: #ffffff;
+}
+
+/* Keep the stack of individual setting cards compact. Section headings keep a
+   little more breathing room above them. */
+.setting-group.obligator-setting-card + .setting-group.obligator-setting-card,
+.setting-group.obligator-setting-section + .setting-group.obligator-setting-card {
+	margin-top: var(--size-4-3, 8px);
+}
+
+/* Settings are rendered one card per setting (Obsidian 1.13 groups). A parent
+   setting and its dependent sub-settings share one card so the relationship is
+   visible without indenting the rows. */
+
+/* Dependent settings stay visible but greyed out while their parent is off. */
+.obligator-setting-card .setting-item.is-disabled {
+	opacity: 0.55;
+}

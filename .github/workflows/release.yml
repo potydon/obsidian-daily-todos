@@ -1,0 +1,66 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*"
+
+# Updated permissions to support both GitHub Releases and Artifact Attestations
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup latest stable Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          check-latest: true
+          cache: npm
+
+      - name: Validate manifest version against git tag
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/}"
+          TAG_VERSION="${TAG_VERSION#v}"
+
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+
+          echo "Git Tag version:       $TAG_VERSION"
+          echo "manifest.json version: $MANIFEST_VERSION"
+
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "❌ ERROR: The git tag ($TAG_VERSION) doesn't match the version in manifest.json ($MANIFEST_VERSION)!"
+            exit 1
+          fi
+          echo "✅ Version validation passed!"
+
+      - name: Build plugin
+        run: |
+          npm ci
+          npm run build
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+
+          gh release create "$tag" \
+            --title="$tag" \
+            --draft \
+            main.js manifest.json styles.css

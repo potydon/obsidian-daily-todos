@@ -1,0 +1,11 @@
+{
+	"id": "daily-todos",
+	"name": "Daily Todos",
+	"version": "1.1.1",
+	"minAppVersion": "1.15.0",
+	"description": "An alternative replacement for the built-in daily notes plugin. Copying over unchecked to-do items to your new daily note, along with adding any scheduled items you've set up. Forked from obligator.",
+	"author": "potydon",
+	"authorUrl": "https://github.com/potydon",
+	"fundingUrl": "",
+	"isDesktopOnly": false
+}
