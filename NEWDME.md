@@ -34,6 +34,24 @@ The archive function will not delete directories if you use this in combination
 with a nested directory structure. I suggest only using a nested structure for
 the archive date format.
 
+### Navigating daily notes
+
+Besides the carrot icon and **Open today's note**, Daily Todos adds four
+commands you can bind to hotkeys in **Settings > Hotkeys**:
+
+* **Open yesterday's note** and **Open tomorrow's note** open the daily note for
+  the day before or after today. They only open notes that already exist; if
+  there is no note for that day, a notice tells you so and nothing is created.
+* **Go to previous daily note** and **Go to next daily note** open the nearest
+  existing daily note before or after the note you are currently viewing. When
+  the active file is not a daily note, they start from today instead. They skip
+  gaps, so a weekend or a skipped day does not stop you from reaching the next
+  note that exists.
+
+The date is read from the note's path relative to the daily note folder, so
+these commands work with nested folder date formats such as
+`YYYY/MM-MMMM/YYYY-MM-DD` as well.
+
 ### Moving to-dos out of the previous note
 By default Daily Todos *moves* unfinished to-dos: they are added to the new note
 and removed from the previous one, so the previous note becomes a record of what

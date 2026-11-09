@@ -207,19 +207,7 @@ export default class Obligator extends Plugin {
 			// Context: settings are valid, new note doesn't exist.
 			// ----------------------------------------------------------------
 			// Get a list of all the files in the daily notes directory
-			const find_all_notes = (path: string): TFile[] => {
-				const abstract = this.app.vault.getAbstractFileByPath(normalizePath(path));
-				let notes: TFile[] = [];
-				if (abstract instanceof TFile && abstract.extension === "md") {
-					notes.push(abstract);
-				} else if (abstract instanceof TFolder) {
-					for (const child of abstract.children) {
-						notes = notes.concat(find_all_notes(`${path}/${child.name}`));
-					}
-				}
-				return notes;
-			};
-			const notes = find_all_notes(this.settings.note_path);
+			const notes = this.find_all_notes(this.settings.note_path);
 			notes.sort((a, b) => {
 				const a_name = a.path.slice(this.settings.note_path.length + 1);
 				const b_name = b.path.slice(this.settings.note_path.length + 1);
@@ -539,6 +527,29 @@ export default class Obligator extends Plugin {
 			callback: run_obligator
 		});
 
+		// Daily-note navigation. Yesterday and tomorrow only open notes that
+		// already exist; previous and next walk to the nearest existing note.
+		this.addCommand({
+			id: "obligator-open-yesterday",
+			name: "Open yesterday's note",
+			callback: () => this.open_relative_day(-1)
+		});
+		this.addCommand({
+			id: "obligator-open-tomorrow",
+			name: "Open tomorrow's note",
+			callback: () => this.open_relative_day(1)
+		});
+		this.addCommand({
+			id: "obligator-previous-note",
+			name: "Go to previous daily note",
+			callback: () => this.open_neighbor_note(-1)
+		});
+		this.addCommand({
+			id: "obligator-next-note",
+			name: "Go to next daily note",
+			callback: () => this.open_neighbor_note(1)
+		});
+
 		this.app.workspace.onLayoutReady(async () => {
 			// Run obligator if the user has enabled the startup setting.
 			if (this.settings.run_on_startup) {
@@ -588,6 +599,114 @@ export default class Obligator extends Plugin {
 
 	onunload(): void {
 		this.refresh_reading_views?.cancel();
+	}
+
+	/** Every Markdown file under the daily-note folder, recursively. */
+	find_all_notes(path: string): TFile[] {
+		const abstract = this.app.vault.getAbstractFileByPath(normalizePath(path));
+		let notes: TFile[] = [];
+		if (abstract instanceof TFile && abstract.extension === "md") {
+			notes.push(abstract);
+		} else if (abstract instanceof TFolder) {
+			for (const child of abstract.children) {
+				notes = notes.concat(this.find_all_notes(`${path}/${child.name}`));
+			}
+		}
+		return notes;
+	}
+
+	/**
+	 * The calendar day a daily note represents, read from its path relative to
+	 * the daily-note folder. Returns null for files that don't match the
+	 * configured date format.
+	 */
+	note_date(file: TFile): Moment | null {
+		const note_path = normalizePath(this.settings.note_path);
+		const prefix = note_path.endsWith("/") ? note_path : `${note_path}/`;
+		if (!file.path.startsWith(prefix) || !file.path.endsWith(".md")) {
+			return null;
+		}
+		const name = file.path.slice(prefix.length, -3);
+		const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
+		const date = window.moment(name, date_format, true);
+		return date.isValid() ? date : null;
+	}
+
+	private has_note_path(): boolean {
+		if (["", null].includes(this.settings.note_path)) {
+			new Notice(`You must specify a note path in the settings.`);
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Open the daily note for a given day, if it exists. Returns whether the
+	 * note was found.
+	 */
+	async open_note_for_date(date: Moment): Promise<boolean> {
+		const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
+		const note_path = `${this.settings.note_path}/${date.format(date_format)}.md`;
+		const file = this.app.vault.getAbstractFileByPath(normalizePath(note_path));
+		if (!(file instanceof TFile)) {
+			return false;
+		}
+		await this.app.workspace.getLeaf(false).openFile(file);
+		return true;
+	}
+
+	/** "Open yesterday's/tomorrow's note": only opens an existing note. */
+	async open_relative_day(offset: number): Promise<void> {
+		if (!this.has_note_path()) return;
+		const date = window.moment().add(offset, "day");
+		if (!await this.open_note_for_date(date)) {
+			const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
+			new Notice(`No daily note exists for ${date.format(date_format)}.`);
+		}
+	}
+
+	/**
+	 * The day to navigate from: the active daily note, or today when the
+	 * active file isn't one.
+	 */
+	reference_date(): Moment {
+		const active = this.app.workspace.getActiveFile();
+		if (active) {
+			const date = this.note_date(active);
+			if (date) return date;
+		}
+		return window.moment();
+	}
+
+	/**
+	 * "Go to previous/next daily note": opens the nearest existing daily note
+	 * before (-1) or after (1) the reference day, falling back to today.
+	 */
+	async open_neighbor_note(direction: -1 | 1): Promise<void> {
+		if (!this.has_note_path()) return;
+		const reference = this.reference_date().clone().startOf("day");
+
+		let best: { file: TFile; date: Moment } | null = null;
+		for (const file of this.find_all_notes(this.settings.note_path)) {
+			const date = this.note_date(file);
+			if (!date) continue;
+			const day = date.clone().startOf("day");
+			if (direction < 0 ? !day.isBefore(reference) : !day.isAfter(reference)) {
+				continue;
+			}
+			if (!best
+				|| (direction < 0 ? date.isAfter(best.date) : date.isBefore(best.date))) {
+				best = { file, date };
+			}
+		}
+
+		if (best) {
+			await this.app.workspace.getLeaf(false).openFile(best.file);
+		} else {
+			new Notice(direction < 0
+				? "No earlier daily note found."
+				: "No later daily note found.");
+		}
 	}
 
 	async loadSettings(): Promise<void> {
