@@ -4,13 +4,13 @@ import {
 	PluginSettingTab,
 	TFolder,
 	TFile,
+	MarkdownView,
 	debounce,
 	normalizePath
 } from 'obsidian';
 import type {
 	App,
 	Debouncer,
-	MarkdownView,
 	MomentFormatComponent,
 	Setting,
 	SettingDefinition,
@@ -550,6 +550,16 @@ export default class Obligator extends Plugin {
 			callback: () => this.open_neighbor_note(1)
 		});
 
+		// A save command whose name starts with "w" so that typing "w" in the
+		// command palette selects it (the same idea as Vim's :w). The palette
+		// shows the part before ": " as a prefix, so this reads "w | Save note".
+		this.addCommand({
+			id: "obligator-save-note",
+			name: "w: Save note",
+			icon: "save",
+			callback: () => this.save_active_note()
+		});
+
 		this.app.workspace.onLayoutReady(async () => {
 			// Run obligator if the user has enabled the startup setting.
 			if (this.settings.run_on_startup) {
@@ -707,6 +717,21 @@ export default class Obligator extends Plugin {
 				? "No earlier daily note found."
 				: "No later daily note found.");
 		}
+	}
+
+	/**
+	 * Save the active note. `MarkdownView.save` is the same routine Obsidian
+	 * uses for Ctrl+S: it writes the current view data when it differs from the
+	 * last saved version. In reading view there is usually nothing pending, so
+	 * the command simply behaves as a no-op instead of doing something else.
+	 */
+	async save_active_note(): Promise<void> {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!view) {
+			new Notice("There is no note open to save.");
+			return;
+		}
+		await view.save();
 	}
 
 	async loadSettings(): Promise<void> {
