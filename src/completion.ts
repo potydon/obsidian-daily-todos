@@ -1,4 +1,5 @@
-import { TFile } from 'obsidian';
+import { MarkdownView, TFile } from 'obsidian';
+import type { Editor, MarkdownFileInfo, TAbstractFile } from 'obsidian';
 
 import {
 	TASK_LINE_REGEX,
@@ -9,15 +10,17 @@ import {
 	mark_completed,
 	unmark_completed
 } from './due';
+import type Obligator from './main';
+import type { CompletionOptions } from './types';
 
 // The checkbox state character of a task line, lowercased, or null when the
 // line is not a task.
-function checkbox_state(line) {
+function checkbox_state(line: string): string | null {
 	const match = TASK_LINE_REGEX.exec(line);
 	return match ? match[2].toLowerCase() : null;
 }
 
-function is_completed(state) {
+function is_completed(state: string | null): boolean {
 	return state === 'x';
 }
 
@@ -26,7 +29,12 @@ function is_completed(state) {
 // Lines are compared by their task text as well as their position, so a line
 // that merely shifted (because something above it was added or removed) is not
 // mistaken for a completed one.
-function annotate_changes(old_lines, new_lines, completed_at, options) {
+function annotate_changes(
+	old_lines: string[],
+	new_lines: string[],
+	completed_at: Date,
+	options: CompletionOptions
+): string[] | null {
 	let changed = false;
 	const result = new_lines.slice();
 	const count = Math.min(old_lines.length, new_lines.length);
@@ -62,7 +70,7 @@ function annotate_changes(old_lines, new_lines, completed_at, options) {
 // The smallest text change needed to turn `before` into `after`. Only the
 // completion marker is touched, which keeps the cursor where the user left it
 // instead of jumping to the end of the line.
-function line_patch(before, after) {
+function line_patch(before: string, after: string): { from: number; to: number; text: string } {
 	let start = 0;
 	while (start < before.length
 		&& start < after.length
@@ -86,10 +94,10 @@ function line_patch(before, after) {
 // the line. Editor changes are handled immediately; changes that happen outside
 // an editor (reading view checkboxes, external edits) are picked up through the
 // vault's modify event.
-export function register_completion_annotations(plugin) {
-	const snapshots = new Map();
+export function register_completion_annotations(plugin: Obligator): void {
+	const snapshots = new Map<string, string[]>();
 
-	const seed = async (file) => {
+	const seed = async (file: TAbstractFile | null): Promise<void> => {
 		if (!(file instanceof TFile) || file.extension !== 'md') return;
 		try {
 			const content = await plugin.app.vault.read(file);
@@ -99,7 +107,13 @@ export function register_completion_annotations(plugin) {
 		}
 	};
 
-	const apply_update = (file, editor, previous, current, options) => {
+	const apply_update = (
+		file: TFile,
+		editor: Editor | null | undefined,
+		previous: string[],
+		current: string[],
+		options: CompletionOptions
+	): string[] | void => {
 		const updated = annotate_changes(previous, current, new Date(), options);
 		// Remember the result before touching the editor: applying it fires
 		// another editor-change, which must not stamp the same line twice.
@@ -112,13 +126,13 @@ export function register_completion_annotations(plugin) {
 				if (updated[i] === current[i]) continue;
 				const patch = line_patch(current[i], updated[i]);
 				changes.push({
-					from: {line: i, ch: patch.from},
-					to: {line: i, ch: patch.to},
+					from: { line: i, ch: patch.from },
+					to: { line: i, ch: patch.to },
 					text: patch.text
 				});
 			}
 			if (changes.length > 0) {
-				editor.transaction({changes});
+				editor.transaction({ changes });
 			}
 			return;
 		}
@@ -128,11 +142,11 @@ export function register_completion_annotations(plugin) {
 		return updated;
 	};
 
-	const handle_editor_change = (editor, info) => {
+	const handle_editor_change = (editor: Editor, info: MarkdownView | MarkdownFileInfo): void => {
 		const file = info && info.file;
 		if (!(file instanceof TFile) || file.extension !== 'md') return;
 
-		const {lines: current} = split_lines(editor.getValue());
+		const { lines: current } = split_lines(editor.getValue());
 		const previous = snapshots.get(file.path);
 		if (!previous) {
 			snapshots.set(file.path, current);
@@ -142,7 +156,7 @@ export function register_completion_annotations(plugin) {
 		apply_update(file, editor, previous, current, plugin.settings);
 	};
 
-	const handle_modify = async (file) => {
+	const handle_modify = async (file: TAbstractFile): Promise<void> => {
 		if (!(file instanceof TFile) || file.extension !== 'md') return;
 
 		const previous = snapshots.get(file.path);
@@ -159,19 +173,22 @@ export function register_completion_annotations(plugin) {
 		// is open in both modes, the preview leaf wins so clicks there still
 		// get stamped.
 		const leaves = plugin.app.workspace.getLeavesOfType('markdown')
-			.filter((l) => l.view && l.view.file && l.view.file.path === file.path);
-		if (leaves.length > 0 && leaves.every((l) => l.view.getMode?.() === 'source')) {
+			.filter((l) => {
+				const view = l.view as MarkdownView;
+				return view && view.file && view.file.path === file.path;
+			});
+		if (leaves.length > 0 && leaves.every((l) => (l.view as MarkdownView).getMode?.() === 'source')) {
 			return;
 		}
 
-		let content;
+		let content: string;
 		try {
 			content = await plugin.app.vault.read(file);
 		} catch (e) {
 			return;
 		}
 
-		const {lines, eol} = split_lines(content);
+		const { lines, eol } = split_lines(content);
 		const updated = annotate_changes(previous, lines, new Date(), plugin.settings);
 		snapshots.set(file.path, updated || lines);
 		if (!updated) return;
@@ -198,8 +215,8 @@ export function register_completion_annotations(plugin) {
 	// file-open, so take their initial snapshot here.
 	plugin.app.workspace.onLayoutReady(() => {
 		for (const leaf of plugin.app.workspace.getLeavesOfType('markdown')) {
-			const file = leaf.view && leaf.view.file;
-			if (file instanceof TFile) seed(file);
+			const file = leaf.view && (leaf.view as MarkdownView).file;
+			if (file instanceof TFile) void seed(file);
 		}
 	});
 }

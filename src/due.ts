@@ -1,4 +1,17 @@
 import { CHECKBOX_REGEX, TASK_LINE_REGEX } from './note_utils';
+import type {
+	CompletionOptions,
+	DateParts,
+	DueTextStyle,
+	DueTextType,
+	DueToken,
+	DueTokenKind,
+	PillTier,
+	ResolvedLine,
+	Structure,
+	TimeParts,
+	TokenPill
+} from './types';
 
 // Due date and due time tokens: "!2026-10-10", "!10-12-2026", "!10/12/26",
 // "!today", "!tomorrow", "!yesterday", "!upcoming", "!15:30" and "!10:15:30".
@@ -29,33 +42,35 @@ const TOKEN_SOURCE =
 
 const ALIASES = new Set(['upcoming', 'today', 'tomorrow', 'yesterday']);
 
-function pad(value) {
+type MutableDueToken = Omit<DueToken, 'kind'> & { kind: DueTokenKind | null };
+
+function pad(value: number): string {
 	return String(value).padStart(2, '0');
 }
 
-export function start_of_day(date) {
+export function start_of_day(date: Date): Date {
 	return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-function end_of_day(date) {
+function end_of_day(date: Date): Date {
 	return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
 }
 
-function add_days(date, days) {
+function add_days(date: Date, days: number): Date {
 	return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
 
-function is_same_month(a, b) {
+function is_same_month(a: Date, b: Date): boolean {
 	return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
 // Calendar-day difference, ignoring the time of day. Rounded because DST can
 // make a day 23 or 25 hours long.
-function day_diff(date, now) {
-	return Math.round((start_of_day(date) - start_of_day(now)) / 86400000);
+function day_diff(date: Date, now: Date): number {
+	return Math.round((start_of_day(date).getTime() - start_of_day(now).getTime()) / 86400000);
 }
 
-function is_this_week(date, now) {
+function is_this_week(date: Date, now: Date): boolean {
 	const today = start_of_day(now);
 	const monday_offset = (today.getDay() + 6) % 7;
 	const week_start = add_days(today, -monday_offset);
@@ -64,7 +79,7 @@ function is_this_week(date, now) {
 	return day >= week_start && day <= week_end;
 }
 
-function is_next_week(date, now) {
+function is_next_week(date: Date, now: Date): boolean {
 	const today = start_of_day(now);
 	const monday_offset = (today.getDay() + 6) % 7;
 	const week_start = add_days(today, -monday_offset + 7);
@@ -73,30 +88,30 @@ function is_next_week(date, now) {
 	return day >= week_start && day <= week_end;
 }
 
-function month_index(date) {
+function month_index(date: Date): number {
 	return date.getFullYear() * 12 + date.getMonth();
 }
 
-function is_next_month(date, now) {
+function is_next_month(date: Date, now: Date): boolean {
 	return month_index(date) === month_index(now) + 1;
 }
 
-function is_same_year(date, now) {
+function is_same_year(date: Date, now: Date): boolean {
 	return date.getFullYear() === now.getFullYear();
 }
 
-function is_next_year(date, now) {
+function is_next_year(date: Date, now: Date): boolean {
 	return date.getFullYear() === now.getFullYear() + 1;
 }
 
 // "2026-10-10" / "2026/10/10" (YYYY-MM-DD), "10-12-2026" / "10/12/2026"
 // (DD-MM-YYYY) and "10-12-26" / "10/12/26" (DD-MM-YY, two-digit years are 20xx).
-export function parse_date_value(value) {
+export function parse_date_value(value: string): DateParts | null {
 	const parts = value.split(/[-/]/).map(Number);
 	if (parts.length !== 3) return null;
-	let year;
-	let month;
-	let day;
+	let year: number;
+	let month: number;
+	let day: number;
 	if (parts[0] >= 1000) {
 		[year, month, day] = parts;
 	} else {
@@ -115,7 +130,7 @@ export function parse_date_value(value) {
 }
 
 // "15:30" or "10:15:30".
-export function parse_time_value(value) {
+export function parse_time_value(value: string): TimeParts | null {
 	const parts = value.split(':').map(Number);
 	if (parts.length !== 2 && parts.length !== 3) return null;
 	const [hours, minutes, seconds = null] = parts;
@@ -128,19 +143,20 @@ export function parse_time_value(value) {
 // the text so the tokens can be replaced with pills. A token may carry a
 // completion date (`!date@completed`) or completion time (`!time@completed`),
 // which are exposed as `token.completed` and `token.completed_time`.
-export function find_due_tokens(text) {
-	const tokens = [];
+export function find_due_tokens(text: string): DueToken[] {
+	const tokens: DueToken[] = [];
 	const pattern = new RegExp(TOKEN_SOURCE, 'gi');
 	for (const match of text.matchAll(pattern)) {
 		const raw = match[0];
 		const value = match[1];
+		const index = match.index!;
 		const at = value.indexOf('@');
 		const head = at === -1 ? value : value.slice(0, at);
 		const completed_value = at === -1 ? null : value.slice(at + 1);
 		const lower = head.toLowerCase();
-		const token = {
-			from: match.index,
-			to: match.index + raw.length,
+		const token: MutableDueToken = {
+			from: index,
+			to: index + raw.length,
 			raw,
 			kind: null,
 			date: null,
@@ -163,7 +179,7 @@ export function find_due_tokens(text) {
 			if (!token.completed && !token.completed_time) continue;
 			token.kind = 'completed-only';
 		} else if (ALIASES.has(lower)) {
-			token.kind = lower;
+			token.kind = lower as DueTokenKind;
 		} else if (head.includes(':')) {
 			if (head.includes('-')) {
 				const parts = head.split('-');
@@ -185,26 +201,26 @@ export function find_due_tokens(text) {
 			token.kind = 'date';
 			token.date = date;
 		}
-		tokens.push(token);
+		tokens.push(token as DueToken);
 	}
 	return tokens;
 }
 
-function alias_date(kind, now) {
+function alias_date(kind: DueTokenKind, now: Date): Date | null {
 	if (kind === 'today') return start_of_day(now);
 	if (kind === 'tomorrow') return add_days(start_of_day(now), 1);
 	if (kind === 'yesterday') return add_days(start_of_day(now), -1);
 	return null;
 }
 
-function token_date(token, now) {
-	if (token.kind === 'date') {
+function token_date(token: DueToken, now: Date): Date | null {
+	if (token.kind === 'date' && token.date) {
 		return new Date(token.date.year, token.date.month - 1, token.date.day);
 	}
 	return alias_date(token.kind, now);
 }
 
-function combine(date, time) {
+function combine(date: Date | null, time: TimeParts | null): Date | null {
 	if (!date) return null;
 	if (!time) return end_of_day(date);
 	return new Date(
@@ -220,13 +236,13 @@ function combine(date, time) {
 // Resolves a whole line: the first date-ish token decides the day and the first
 // time token the time of day. Used both for the pills and for rollover sorting.
 // A completed to-do also exposes the completion day of its marker.
-export function resolve_line(text, now) {
+export function resolve_line(text: string, now: Date): ResolvedLine | null {
 	const tokens = find_due_tokens(text);
 	if (tokens.length === 0) return null;
 
-	let date = null;
-	let time = null;
-	let completed_at = null;
+	let date: Date | null = null;
+	let time: TimeParts | null = null;
+	let completed_at: DateParts | TimeParts | null = null;
 	for (const token of tokens) {
 		if ((token.completed || token.completed_time) && !completed_at) {
 			completed_at = token.completed || token.completed_time;
@@ -242,17 +258,17 @@ export function resolve_line(text, now) {
 	return { tokens, date, time, completed_at };
 }
 
-export function format_time(time) {
+export function format_time(time: TimeParts): string {
 	const base = `${pad(time.hours)}:${pad(time.minutes)}`;
 	return time.seconds === null ? base : `${base}:${pad(time.seconds)}`;
 }
 
 // The compact day-first form used by completion markers: 12/10/26.
-export function format_short_date(parts) {
+export function format_short_date(parts: DateParts): string {
 	return `${pad(parts.day)}/${pad(parts.month)}/${pad(parts.year % 100)}`;
 }
 
-function parts_from_date(date) {
+function parts_from_date(date: Date): DateParts {
 	return {
 		year: date.getFullYear(),
 		month: date.getMonth() + 1,
@@ -262,7 +278,7 @@ function parts_from_date(date) {
 
 // A calendar-aware breakdown between two dates (from <= to), used by the
 // relative-countdown wording.
-function span_parts(from, to) {
+function span_parts(from: Date, to: Date): { years: number; months: number; days: number } {
 	const start = start_of_day(from);
 	const end = start_of_day(to);
 	let years = end.getFullYear() - start.getFullYear();
@@ -276,16 +292,16 @@ function span_parts(from, to) {
 		years -= 1;
 		months += 12;
 	}
-	return {years, months, days};
+	return { years, months, days };
 }
 
-function unit_label(count, unit) {
+function unit_label(count: number, unit: string): string {
 	return `${count} ${unit}${count === 1 ? '' : 's'}`;
 }
 
 // Exact date wording. Obsidian exposes moment on window; the native fallback
 // keeps this module usable outside the app (for example in tests).
-export function exact_label(date, format, type = 'due') {
+export function exact_label(date: Date, format?: string, type: DueTextType = 'due'): string {
 	const pattern = format || 'MMM D, YYYY';
 	const moment = typeof window !== 'undefined' && typeof window.moment === 'function'
 		? window.moment
@@ -301,7 +317,7 @@ export function exact_label(date, format, type = 'due') {
 }
 
 // The named wording: Due Today, Due This Week, ... Overdue.
-export function named_label(date, now, type = 'due') {
+export function named_label(date: Date, now: Date, type: DueTextType = 'due'): string {
 	const remaining = type === 'remaining';
 	const difference = day_diff(date, now);
 	if (difference < 0) return 'Overdue';
@@ -316,12 +332,12 @@ export function named_label(date, now, type = 'due') {
 	return remaining ? 'Later' : 'Due Later';
 }
 
-function day_count_label(days) {
+function day_count_label(days: number): string {
 	return unit_label(days, 'Day');
 }
 
 // The day-count wording: Due in 67 Days / 67 Days left / Overdue by 3 Days.
-export function days_label(date, now, type = 'due') {
+export function days_label(date: Date, now: Date, type: DueTextType = 'due'): string {
 	const remaining = type === 'remaining';
 	const difference = day_diff(date, now);
 	if (difference === 0) return remaining ? 'Today' : 'Due Today';
@@ -332,9 +348,9 @@ export function days_label(date, now, type = 'due') {
 
 // The largest calendar unit for the relative-countdown wording:
 // 2 Years, 2 Months, 3 Weeks, 10 Days.
-function countdown_unit(date, now) {
+function countdown_unit(date: Date, now: Date): string {
 	const future = day_diff(date, now) >= 0;
-	const {years, months, days} = future ? span_parts(now, date) : span_parts(date, now);
+	const { years, months, days } = future ? span_parts(now, date) : span_parts(date, now);
 	if (years > 0) return unit_label(years, 'Year');
 	if (months > 0) return unit_label(months, 'Month');
 	if (days >= 14) return unit_label(Math.floor(days / 7), 'Week');
@@ -343,7 +359,7 @@ function countdown_unit(date, now) {
 
 // The relative-countdown wording:
 // Due in 2 Years / 2 Years left / Overdue by 3 Days / 3 Days passed.
-export function countdown_label(date, now, type = 'due') {
+export function countdown_label(date: Date, now: Date, type: DueTextType = 'due'): string {
 	const remaining = type === 'remaining';
 	const difference = day_diff(date, now);
 	if (difference === 0) return remaining ? 'Today' : 'Due Today';
@@ -353,10 +369,10 @@ export function countdown_label(date, now, type = 'due') {
 }
 
 // The label for a due date token based on the configured wording.
-export function date_label(date, now, style) {
+export function date_label(date: Date, now: Date, style?: DueTextStyle): string {
 	style = style || {};
 	const text = style.text || 'relative';
-	const type = style.type === 'remaining' ? 'remaining' : 'due';
+	const type: DueTextType = style.type === 'remaining' ? 'remaining' : 'due';
 	if (text === 'exact') return exact_label(date, style.format, type);
 	if (text === 'days') return days_label(date, now, type);
 	if (text === 'countdown') return countdown_label(date, now, type);
@@ -364,7 +380,7 @@ export function date_label(date, now, style) {
 }
 
 // Urgency tier used for the pill colour.
-export function due_tier(datetime, now) {
+export function due_tier(datetime: Date, now: Date): PillTier {
 	if (datetime.getTime() < now.getTime()) return 'overdue';
 	const difference = day_diff(datetime, now);
 	if (difference === 0) return 'today';
@@ -378,7 +394,7 @@ export function due_tier(datetime, now) {
 // account: a `!15:30` on a line that also has `!tomorrow` belongs to tomorrow.
 // Dates get a calendar-clock icon, times a plain clock. Once a to-do is
 // completed every pill turns green and the date pill shows the completion day.
-export function token_pill(token, resolved, now, style) {
+export function token_pill(token: DueToken, resolved: ResolvedLine, now: Date, style?: DueTextStyle): TokenPill {
 	if (token.completed) {
 		return {
 			label: format_short_date(token.completed),
@@ -413,46 +429,46 @@ export function token_pill(token, resolved, now, style) {
 		const date = resolved.date || start_of_day(now);
 		if (!resolved.date) {
 			return {
-				label: format_time(token.time),
+				label: format_time(token.time!),
 				tier: 'time-scheduled',
 				icon: 'clock'
 			};
 		}
 		return {
-			label: format_time(token.time),
+			label: format_time(token.time!),
 			tier: resolved.completed_at
 				? 'completed'
-				: due_tier(combine(date, token.time), now),
+				: due_tier(combine(date, token.time)!, now),
 			icon: 'clock'
 		};
 	}
 	if (token.kind === 'time-range') {
-		const label = `${format_time(token.time)}-${format_time(token.timeEnd)}`;
+		const label = `${format_time(token.time!)}-${format_time(token.timeEnd!)}`;
 		const date = resolved.date || start_of_day(now);
 		if (!resolved.date) {
 			return {
-				label: label,
+				label,
 				tier: 'time-scheduled',
 				icon: 'clock'
 			};
 		}
 		return {
-			label: label,
+			label,
 			tier: resolved.completed_at
 				? 'completed'
-				: due_tier(combine(date, token.time), now),
+				: due_tier(combine(date, token.time)!, now),
 			icon: 'clock'
 		};
 	}
-	const date = token_date(token, now);
-	const tier = resolved.completed_at
+	const date = token_date(token, now)!;
+	const tier: PillTier = resolved.completed_at
 		? 'completed'
-		: due_tier(combine(date, resolved.time), now);
+		: due_tier(combine(date, resolved.time)!, now);
 	const label = date_label(date, now, style);
 	return { label, tier, icon: 'calendar-clock' };
 }
 
-function replace_span(line, from, to, replacement) {
+function replace_span(line: string, from: number, to: number, replacement: string): string {
 	if (replacement) {
 		return line.slice(0, from) + replacement + line.slice(to);
 	}
@@ -480,7 +496,7 @@ function replace_span(line, from, to, replacement) {
 // `append_completion_date` / `append_completion_time` options. A to-do that
 // already carries a due token is always stamped the same way, regardless of
 // those options.
-export function mark_completed(line, completed_at, options = {}) {
+export function mark_completed(line: string, completed_at: Date, options: CompletionOptions = {}): string {
 	if (!TASK_LINE_REGEX.test(line)) return line;
 	const tokens = find_due_tokens(line);
 	if (tokens.some((token) => token.completed || token.completed_time)) return line;
@@ -508,20 +524,20 @@ export function mark_completed(line, completed_at, options = {}) {
 		return `${line}${/\s$/.test(line) ? '' : ' '}${standalone.join(' ')}`;
 	}
 
-	const marks = [];
+	const marks: Array<{ to: number; text: string }> = [];
 	if (date_target) {
-		marks.push({to: date_target.to, text: `@${short}`});
+		marks.push({ to: date_target.to, text: `@${short}` });
 	}
 	if (time_target) {
 		const with_seconds = time_target.kind === 'time-range'
-			? time_target.time.seconds !== null || time_target.timeEnd.seconds !== null
-			: time_target.time.seconds !== null;
-		const completion_time = format_time({
+			? time_target.time!.seconds !== null || time_target.timeEnd!.seconds !== null
+			: time_target.time!.seconds !== null;
+		const time_text = format_time({
 			hours: completed_at.getHours(),
 			minutes: completed_at.getMinutes(),
 			seconds: with_seconds ? completed_at.getSeconds() : null
 		});
-		marks.push({to: time_target.to, text: `@${completion_time}`});
+		marks.push({ to: time_target.to, text: `@${time_text}` });
 	}
 
 	// Apply from the end so an earlier insertion cannot shift a later offset.
@@ -535,7 +551,7 @@ export function mark_completed(line, completed_at, options = {}) {
 
 // Removes the completion day/time again, restoring the due token exactly as it
 // was. A marker without a due token (`!@comp`) is removed entirely.
-export function unmark_completed(line) {
+export function unmark_completed(line: string): string {
 	const tokens = find_due_tokens(line);
 	if (!tokens.some((token) => token.completed || token.completed_time)) return line;
 
@@ -555,7 +571,7 @@ export function unmark_completed(line) {
 // matching the target note is preferred (!today, !tomorrow, !yesterday);
 // anything further away is pinned to an absolute !YYYY-MM-DD. Absolute dates,
 // times and !upcoming are left alone.
-export function pin_relative_aliases(line, source, target) {
+export function pin_relative_aliases(line: string, source: Date, target: Date): string {
 	const tokens = find_due_tokens(line);
 	if (tokens.length === 0) return line;
 
@@ -567,7 +583,7 @@ export function pin_relative_aliases(line, source, target) {
 			&& token.kind !== 'yesterday') {
 			continue;
 		}
-		const day = alias_date(token.kind, source);
+		const day = alias_date(token.kind, source)!;
 		const difference = day_diff(day, target);
 		let replacement;
 		if (difference === 0) {
@@ -590,13 +606,13 @@ export function pin_relative_aliases(line, source, target) {
 
 // Applies pin_relative_aliases to every checkbox line in the structure, so
 // to-dos moved into a new daily note keep their original due day.
-export function pin_aliases_in_structure(structure, source, target) {
+export function pin_aliases_in_structure(structure: Structure, source: Date, target: Date): Structure {
 	if (structure.text && CHECKBOX_REGEX.test(structure.text)) {
 		structure.text = pin_relative_aliases(structure.text, source, target);
 	}
 	for (let i = 0; i < structure.children.length; i++) {
 		const child = structure.children[i];
-		if (typeof child === 'object' && child !== null) {
+		if (typeof child === 'object' && child !== null && child !== undefined) {
 			pin_aliases_in_structure(child, source, target);
 		} else if (typeof child === 'string' && CHECKBOX_REGEX.test(child)) {
 			structure.children[i] = pin_relative_aliases(child, source, target);
@@ -607,12 +623,12 @@ export function pin_aliases_in_structure(structure, source, target) {
 
 // Timestamp used to order to-dos by due date. Lines with no token, or only with
 // `!upcoming`, return null and sort after the dated ones.
-export function due_sort_key(text, now) {
+export function due_sort_key(text: string, now: Date): number | null {
 	const resolved = resolve_line(text, now);
 	if (!resolved) return null;
 	if (!resolved.date && !resolved.time) return null;
 	const date = resolved.date || start_of_day(now);
-	const datetime = resolved.time ? combine(date, resolved.time) : end_of_day(date);
+	const datetime = resolved.time ? combine(date, resolved.time)! : end_of_day(date);
 	return datetime.getTime();
 }
 
@@ -620,10 +636,11 @@ export function due_sort_key(text, now) {
 // leaving to-dos without a due date in their original order after the dated
 // ones. Non-to-do children (headings, text) keep their positions, so the note's
 // structure is untouched.
-export function sort_structure_by_due(structure, now) {
-	const slots = [];
+export function sort_structure_by_due(structure: Structure, now: Date): Structure {
+	const slots: number[] = [];
 	structure.children.forEach((child, index) => {
 		if (typeof child === 'object'
+			&& child !== undefined
 			&& child.text
 			&& CHECKBOX_REGEX.test(child.text)) {
 			slots.push(index);
@@ -631,10 +648,10 @@ export function sort_structure_by_due(structure, now) {
 	});
 
 	if (slots.length > 1) {
-		const todos = slots.map((index) => structure.children[index]);
+		const todos = slots.map((index) => structure.children[index] as Structure);
 		todos.sort((a, b) => {
-			const a_key = due_sort_key(a.text, now);
-			const b_key = due_sort_key(b.text, now);
+			const a_key = due_sort_key(a.text as string, now);
+			const b_key = due_sort_key(b.text as string, now);
 			if (a_key === null && b_key === null) return 0;
 			if (a_key === null) return 1;
 			if (b_key === null) return -1;
@@ -646,7 +663,7 @@ export function sort_structure_by_due(structure, now) {
 	}
 
 	for (const child of structure.children) {
-		if (typeof child === 'object') sort_structure_by_due(child, now);
+		if (typeof child === 'object' && child !== undefined) sort_structure_by_due(child, now);
 	}
 	return structure;
 }

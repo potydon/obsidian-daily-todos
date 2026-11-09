@@ -1,7 +1,11 @@
 import { TFile, normalizePath, editorInfoField, editorLivePreviewField, setIcon, setTooltip } from 'obsidian';
 import { Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
+import type { DecorationSet, EditorView, ViewUpdate } from '@codemirror/view';
 import { RangeSetBuilder, StateEffect } from '@codemirror/state';
+import type { EditorState, Line } from '@codemirror/state';
+import type { Moment } from 'moment';
 
+import type Obligator from './main';
 import {
 	HABIT_TAG_REGEX,
 	HABIT_TAG_REGEX_GLOBAL,
@@ -19,32 +23,32 @@ import {
 // When the vault changes, entries are marked stale instead of deleted. Live
 // preview keeps rendering the old value while a fresh one is computed in the
 // background, so the pill never disappears or flickers.
-const PAST_CACHE = new Map();
-const PENDING = new Set();
+const PAST_CACHE = new Map<string, { value: number; stale: boolean }>();
+const PENDING = new Set<string>();
 
 // Live preview widgets can only be drawn once a value exists, so remember the
 // editor views that need a repaint when a background computation finishes.
-const ACTIVE_VIEWS = new Set();
-const REFRESH_EFFECT = StateEffect.define();
+const ACTIVE_VIEWS = new Set<EditorView>();
+const REFRESH_EFFECT = StateEffect.define<null>();
 
-export function clear_streak_cache() {
+export function clear_streak_cache(): void {
 	for (const entry of PAST_CACHE.values()) {
 		entry.stale = true;
 	}
 }
 
-export function refresh_live_preview_streaks() {
+export function refresh_live_preview_streaks(): void {
 	for (const view of ACTIVE_VIEWS) {
-		view.dispatch({effects: REFRESH_EFFECT.of(null)});
+		view.dispatch({ effects: REFRESH_EFFECT.of(null) });
 	}
 }
 
-function cache_key(file, name) {
+function cache_key(file: TFile, name: string): string {
 	return `${file.path}|${name}`;
 }
 
 // Parses the date of a daily note from its path.
-function get_note_moment(plugin, file) {
+function get_note_moment(plugin: Obligator, file: TFile): Moment | null {
 	const note_path = plugin.settings.note_path || "";
 	let relative = file.path;
 	if (note_path && file.path.startsWith(note_path)) {
@@ -58,7 +62,7 @@ function get_note_moment(plugin, file) {
 // Counts consecutive completed days strictly before the note's own date. The
 // walk stops as soon as a note is missing, does not contain the habit, or
 // contains it unchecked.
-async function compute_past_uncached(plugin, file, name) {
+async function compute_past_uncached(plugin: Obligator, file: TFile, name: string): Promise<number> {
 	const note_date = get_note_moment(plugin, file);
 	if (!note_date) return 0;
 
@@ -67,7 +71,7 @@ async function compute_past_uncached(plugin, file, name) {
 
 	let streak = 0;
 	let cursor = note_date.clone().startOf('day').subtract(1, 'day');
-	const visited = new Set();
+	const visited = new Set<string>();
 	// 10 years is a generous upper bound and guarantees termination.
 	for (let guard = 0; guard < 3660; guard++) {
 		const relative = cursor.format(plugin.settings.date_format);
@@ -91,19 +95,19 @@ async function compute_past_uncached(plugin, file, name) {
 	return streak;
 }
 
-async function get_past(plugin, file, name) {
+async function get_past(plugin: Obligator, file: TFile, name: string): Promise<number> {
 	const key = cache_key(file, name);
 	const entry = PAST_CACHE.get(key);
 	if (entry && !entry.stale) return entry.value;
 
 	const value = await compute_past_uncached(plugin, file, name);
-	PAST_CACHE.set(key, {value, stale: false});
+	PAST_CACHE.set(key, { value, stale: false });
 	return value;
 }
 
 // Returns the cached past streak immediately, scheduling a background refresh
 // when the entry is missing or stale.
-function get_past_or_schedule(plugin, file, name) {
+function get_past_or_schedule(plugin: Obligator, file: TFile, name: string): number | null {
 	const key = cache_key(file, name);
 	const entry = PAST_CACHE.get(key);
 	if (!entry) {
@@ -116,7 +120,7 @@ function get_past_or_schedule(plugin, file, name) {
 	return entry.value;
 }
 
-function schedule_past(plugin, file, name) {
+function schedule_past(plugin: Obligator, file: TFile, name: string): void {
 	const key = cache_key(file, name);
 	if (PENDING.has(key)) return;
 	PENDING.add(key);
@@ -127,7 +131,7 @@ function schedule_past(plugin, file, name) {
 
 const FLAME_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svg-icon lucide-flame"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>`;
 
-function render_flame_icon(container) {
+function render_flame_icon(container: HTMLElement): void {
 	if (typeof setIcon === 'function') {
 		try {
 			setIcon(container, 'flame');
@@ -140,13 +144,13 @@ function render_flame_icon(container) {
 	}
 }
 
-function badge_label(streak) {
+function badge_label(streak: number): string {
 	return `${streak} day${streak === 1 ? '' : 's'} streak`;
 }
 
 // Colour tiers, keyed by the lowest streak that reaches them. 0-29 stays in
 // the muted gray tier, then 30 yellow, 90 orange, 365 red and 1000 purple.
-function streak_tier(streak) {
+function streak_tier(streak: number): "0" | "30" | "90" | "365" | "1000" {
 	if (streak >= 1000) return '1000';
 	if (streak >= 365) return '365';
 	if (streak >= 90) return '90';
@@ -154,8 +158,8 @@ function streak_tier(streak) {
 	return '0';
 }
 
-function apply_badge(badge, streak, checked) {
-	let icon = badge.querySelector('.habit-streak-icon');
+function apply_badge(badge: HTMLElement, streak: number, checked: boolean): void {
+	let icon = badge.querySelector<HTMLElement>('.habit-streak-icon');
 	if (!icon) {
 		icon = document.createElement('span');
 		icon.className = 'habit-streak-icon';
@@ -163,7 +167,7 @@ function apply_badge(badge, streak, checked) {
 		render_flame_icon(icon);
 		badge.appendChild(icon);
 	}
-	let count = badge.querySelector('.habit-streak-count');
+	let count = badge.querySelector<HTMLElement>('.habit-streak-count');
 	if (!count) {
 		count = document.createElement('span');
 		count.className = 'habit-streak-count';
@@ -172,7 +176,7 @@ function apply_badge(badge, streak, checked) {
 	count.textContent = String(streak);
 
 	const label = badge_label(streak);
-	setTooltip(badge, label, {placement: 'top'});
+	setTooltip(badge, label, { placement: 'top' });
 	badge.setAttribute('data-streak', String(streak));
 	badge.setAttribute('data-tier', streak_tier(streak));
 	// Unticked today: the pill stays a darker grey whatever the tier, so a
@@ -181,43 +185,51 @@ function apply_badge(badge, streak, checked) {
 	badge.classList.toggle('is-zero', streak === 0);
 }
 
-function make_badge(streak, checked) {
+function make_badge(streak: number, checked: boolean): HTMLElement {
 	const badge = document.createElement('span');
 	badge.className = 'habit-streak';
 	apply_badge(badge, streak, checked);
 	return badge;
 }
 
-function update_badge(badge, streak, checked) {
+function update_badge(badge: HTMLElement, streak: number, checked: boolean): void {
 	apply_badge(badge, streak, checked);
 }
 
 // Extracts the text of a rendered task item without the checkbox, the badge, or
 // any nested list content.
-function extract_inline_text(li) {
-	const clone = li.cloneNode(true);
+function extract_inline_text(li: HTMLElement): string {
+	const clone = li.cloneNode(true) as HTMLElement;
 	clone.querySelectorAll('input, ul, ol, .habit-streak').forEach((node) => node.remove());
 	return clone.textContent || "";
+}
+
+interface StreakOccurrence {
+	node: Text;
+	index: number;
+	length: number;
 }
 
 // Finds the rendered `!STREAK` text that belongs to this list item itself
 // (nested list items and previously rendered pills are ignored). Reading view
 // leaves the tag as plain text, so this walks the item's own text nodes.
-function own_streak_occurrences(li) {
-	const occurrences = [];
-	const walk = (node) => {
+function own_streak_occurrences(li: HTMLElement): StreakOccurrence[] {
+	const occurrences: StreakOccurrence[] = [];
+	const walk = (node: Node): void => {
 		for (const child of Array.from(node.childNodes)) {
 			if (child.nodeType === Node.ELEMENT_NODE) {
-				if (child.tagName === "UL" || child.tagName === "OL") continue;
-				if (child.classList && child.classList.contains("habit-streak")) continue;
+				const element = child as HTMLElement;
+				if (element.tagName === "UL" || element.tagName === "OL") continue;
+				if (element.classList && element.classList.contains("habit-streak")) continue;
 				walk(child);
 			} else if (child.nodeType === Node.TEXT_NODE) {
-				const text = child.nodeValue || "";
+				const text_node = child as Text;
+				const text = text_node.nodeValue || "";
 				HABIT_TAG_REGEX_GLOBAL.lastIndex = 0;
-				let match;
+				let match: RegExpExecArray | null;
 				while ((match = HABIT_TAG_REGEX_GLOBAL.exec(text)) !== null) {
 					occurrences.push({
-						node: child,
+						node: text_node,
 						index: match.index,
 						length: match[0].length
 					});
@@ -231,8 +243,8 @@ function own_streak_occurrences(li) {
 
 // Splits a text node around an occurrence and inserts `replacement` there.
 // When `replacement` is null the matched text is simply removed.
-function replace_occurrence(occurrence, replacement) {
-	const {node, index, length} = occurrence;
+function replace_occurrence(occurrence: StreakOccurrence, replacement: Node | null): void {
+	const { node, index, length } = occurrence;
 	const text = node.nodeValue || "";
 	const after = text.slice(index + length);
 	node.nodeValue = text.slice(0, index);
@@ -248,7 +260,7 @@ function replace_occurrence(occurrence, replacement) {
 // Replaces the first `!STREAK` on the item with the pill and hides any extras,
 // matching the live preview behaviour. Returns false when the rendered text
 // does not contain the tag (so the caller can fall back to appending).
-function place_badge_on_tag(li, badge) {
+function place_badge_on_tag(li: HTMLElement, badge: HTMLElement): boolean {
 	const occurrences = own_streak_occurrences(li);
 	if (occurrences.length === 0) return false;
 
@@ -260,7 +272,7 @@ function place_badge_on_tag(li, badge) {
 	return true;
 }
 
-function append_badge(li, badge) {
+function append_badge(li: HTMLElement, badge: HTMLElement): void {
 	const children = Array.from(li.children);
 	const nested = children.find((child) => child.tagName === "UL" || child.tagName === "OL");
 	const paragraph = children.find((child) => child.tagName === "P" || child.tagName === "DIV");
@@ -275,7 +287,7 @@ function append_badge(li, badge) {
 
 // Removes badges added by earlier post-processor runs from this item only, so
 // nested child tasks keep their own pills.
-function remove_own_badges(li) {
+function remove_own_badges(li: HTMLElement): void {
 	for (const child of Array.from(li.children)) {
 		if (child.classList.contains("habit-streak")) child.remove();
 	}
@@ -291,10 +303,10 @@ function remove_own_badges(li) {
 // ---------------------------------------------------------------------------
 // Reading view
 // ---------------------------------------------------------------------------
-function register_reading_view_streaks(plugin) {
+function register_reading_view_streaks(plugin: Obligator): void {
 	// Keeps a single observer/listener set per rendered item, even if the
 	// post-processor runs again over the same DOM.
-	const cleanup_by_item = new WeakMap();
+	const cleanup_by_item = new WeakMap<HTMLElement, () => void>();
 
 	plugin.registerMarkdownPostProcessor(async (el, ctx) => {
 		if (!plugin.settings.note_path) return;
@@ -302,42 +314,42 @@ function register_reading_view_streaks(plugin) {
 		const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
 		if (!(file instanceof TFile)) return;
 
-		const tasks = Array.from(el.querySelectorAll('li.task-list-item'))
+		const tasks = Array.from(el.querySelectorAll<HTMLElement>('li.task-list-item'))
 			.filter((li) => li.querySelector('input[type="checkbox"]'));
 
-		const rendered = [];
-		const names = new Set();
+		const rendered: Array<{ li: HTMLElement; name: string; input: HTMLInputElement | null }> = [];
+		const names = new Set<string>();
 		for (const li of tasks) {
 			const text = extract_inline_text(li);
 			if (!HABIT_TAG_REGEX.test(text)) continue;
 			const name = habit_name(text);
 			if (!name) continue;
 
-			const input = li.querySelector('input[type="checkbox"]');
-			rendered.push({li, name, input});
+			const input = li.querySelector<HTMLInputElement>('input[type="checkbox"]');
+			rendered.push({ li, name, input });
 			names.add(name);
 		}
 		if (rendered.length === 0) return;
 
-		const past = new Map();
+		const past = new Map<string, number>();
 		await Promise.all(Array.from(names).map(async (name) => {
 			past.set(name, await get_past(plugin, file, name).catch(() => 0));
 		}));
 
-		for (const {li, name, input} of rendered) {
+		for (const { li, name, input } of rendered) {
 			// Reading view rewrites `data-task` when the box changes. Prefer it
 			// over `input.checked`, which still holds the pre-click value until
 			// Obsidian's own timeout runs. Depending on the renderer the
 			// attribute sits on the list item or on the paragraph wrapping it.
-			const task_el = (input && input.closest && input.closest('[data-task]')) || li;
-			const checked = () => {
+			const task_el: Element = (input && input.closest && input.closest('[data-task]')) || li;
+			const checked = (): boolean => {
 				const task = task_el.getAttribute('data-task');
 				if (task !== null && task !== '') {
 					return task.toLowerCase() === 'x';
 				}
 				return !!(input && input.checked);
 			};
-			const streak = () => past.get(name) + (checked() ? 1 : 0);
+			const streak = (): number => past.get(name)! + (checked() ? 1 : 0);
 
 			remove_own_badges(li);
 
@@ -350,12 +362,12 @@ function register_reading_view_streaks(plugin) {
 			// note to be saved and re-rendered. The observer fires once Obsidian
 			// has written the new state back to the item; the timer is a fallback
 			// for platforms that only touch the input itself.
-			const refresh = () => update_badge(badge, streak(), checked());
-			const schedule = () => setTimeout(refresh, 0);
-			let observer = null;
+			const refresh = (): void => update_badge(badge, streak(), checked());
+			const schedule = (): number => setTimeout(refresh, 0);
+			let observer: MutationObserver | null = null;
 			if (typeof MutationObserver === 'function') {
 				observer = new MutationObserver(refresh);
-				observer.observe(task_el, {attributes: true, attributeFilter: ['data-task']});
+				observer.observe(task_el, { attributes: true, attributeFilter: ['data-task'] });
 			}
 			if (input) {
 				input.addEventListener('click', schedule);
@@ -379,27 +391,28 @@ function register_reading_view_streaks(plugin) {
 // Live preview
 // ---------------------------------------------------------------------------
 class StreakWidget extends WidgetType {
-	constructor(streak, checked) {
+	constructor(
+		readonly streak: number,
+		readonly checked: boolean
+	) {
 		super();
-		this.streak = streak;
-		this.checked = checked;
 	}
 
-	eq(other) {
+	eq(other: StreakWidget): boolean {
 		return other.streak === this.streak && other.checked === this.checked;
 	}
 
-	toDOM() {
+	toDOM(): HTMLElement {
 		return make_badge(this.streak, this.checked);
 	}
 
 	// Let clicks on the pill move the caret like normal text would.
-	ignoreEvent() {
+	ignoreEvent(): boolean {
 		return false;
 	}
 }
 
-function editor_file(view) {
+function editor_file(view: EditorView): TFile | null {
 	const info = view.state.field(editorInfoField, false);
 	return info && info.file instanceof TFile ? info.file : null;
 }
@@ -408,24 +421,27 @@ function editor_file(view) {
 // way live preview reveals a task's `- [ ]` marker. The tag's own boundaries
 // count as inside (a caret on the `#` reveals it), but the space before or
 // after it does not. The rest of the time the pill replaces the tag.
-function selection_reveals_tag(state, from, to) {
+function selection_reveals_tag(state: EditorState, from: number, to: number): boolean {
 	return state.selection.ranges.some((range) => range.from <= to && range.to >= from);
 }
 
-function register_live_preview_streaks(plugin) {
+function register_live_preview_streaks(plugin: Obligator): void {
 	class HabitStreakViewPlugin {
-		constructor(view) {
+		view: EditorView;
+		decorations: DecorationSet;
+
+		constructor(view: EditorView) {
 			this.view = view;
 			this.decorations = Decoration.none;
 			ACTIVE_VIEWS.add(view);
 			this.rebuild();
 		}
 
-		destroy() {
+		destroy(): void {
 			ACTIVE_VIEWS.delete(this.view);
 		}
 
-		update(update) {
+		update(update: ViewUpdate): void {
 			const forced = update.transactions.some((tr) =>
 				tr.effects.some((effect) => effect.is(REFRESH_EFFECT)));
 			const mode_changed = update.startState.field(editorLivePreviewField, false)
@@ -439,7 +455,7 @@ function register_live_preview_streaks(plugin) {
 			}
 		}
 
-		rebuild() {
+		rebuild(): void {
 			const view = this.view;
 			const file = editor_file(view);
 			const live_preview = view.state.field(editorLivePreviewField, false);
@@ -448,7 +464,7 @@ function register_live_preview_streaks(plugin) {
 				return;
 			}
 
-			const builder = new RangeSetBuilder();
+			const builder = new RangeSetBuilder<Decoration>();
 			for (const range of view.visibleRanges) {
 				let pos = range.from;
 				while (pos <= range.to) {
@@ -460,7 +476,7 @@ function register_live_preview_streaks(plugin) {
 			this.decorations = builder.finish();
 		}
 
-		decorate_line(builder, file, line) {
+		decorate_line(builder: RangeSetBuilder<Decoration>, file: TFile, line: Line): void {
 			const text = line.text;
 			if (!HABIT_TAG_REGEX.test(text) || !TASK_LINE_REGEX.test(text)) return;
 
@@ -477,7 +493,7 @@ function register_live_preview_streaks(plugin) {
 
 			HABIT_TAG_REGEX_GLOBAL.lastIndex = 0;
 			let first = true;
-			let match;
+			let match: RegExpExecArray | null;
 			while ((match = HABIT_TAG_REGEX_GLOBAL.exec(text)) !== null) {
 				const from = line.from + match.index;
 				const to = from + match[0].length;
@@ -505,7 +521,7 @@ function register_live_preview_streaks(plugin) {
 	}));
 }
 
-export function register_habit_streaks(plugin) {
+export function register_habit_streaks(plugin: Obligator): void {
 	register_reading_view_streaks(plugin);
 	register_live_preview_streaks(plugin);
 }

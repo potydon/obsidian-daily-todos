@@ -1,4 +1,27 @@
-import { Notice, Plugin, PluginSettingTab, TFolder, TFile, normalizePath, debounce } from 'obsidian';
+import {
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	TFolder,
+	TFile,
+	debounce,
+	normalizePath
+} from 'obsidian';
+import type {
+	App,
+	Debouncer,
+	MarkdownView,
+	MomentFormatComponent,
+	Setting,
+	SettingDefinition,
+	SettingDefinitionGroup,
+	SettingDefinitionItem,
+	SettingDefinitionRender,
+	TAbstractFile,
+	WorkspaceLeaf
+} from 'obsidian';
+import type { Moment } from 'moment';
+
 import {
 	HEADING_REGEX_GLOBAL,
 	OBLIGATION_REGEX,
@@ -15,29 +38,31 @@ import {
 	drop_todos,
 	collect_unfinished_task_texts,
 	replace_section
-} from "./note_utils"
+} from "./note_utils";
 
 import {
 	register_habit_streaks,
 	clear_streak_cache,
 	refresh_live_preview_streaks
-} from "./streaks"
+} from "./streaks";
 
 import {
 	register_due_pills,
 	refresh_due_pills
-} from "./due_pills"
+} from "./due_pills";
 
 import {
 	sort_structure_by_due,
 	pin_aliases_in_structure
-} from "./due"
+} from "./due";
 
 import {
 	register_completion_annotations
-} from "./completion"
+} from "./completion";
 
-const DEFAULT_SETTINGS = {
+import type { ObligatorSettings, Structure } from "./types";
+
+const DEFAULT_SETTINGS: ObligatorSettings = {
 	initial: "",
 	terminal: "",
 	date_format: "YYYY-MM-DD",
@@ -59,13 +84,26 @@ const DEFAULT_SETTINGS = {
 	due_date_format: "MMM D, YYYY",
 	append_completion_date: true,
 	append_completion_time: false
-}
+};
+
+type MomentSettingKey = "date_format" | "archive_date_format" | "due_date_format";
+
+// A render definition may also carry `disabled`, which Obsidian honours even
+// though the public type only declares it on action definitions.
+type RenderSettingDefinition = SettingDefinitionRender & {
+	disabled?: boolean | (() => boolean);
+};
+
+type SettingDefinitionInput = SettingDefinition | RenderSettingDefinition;
 
 export default class Obligator extends Plugin {
-	async onload() {
+	settings: ObligatorSettings = { ...DEFAULT_SETTINGS };
+	refresh_reading_views?: Debouncer<[], void>;
+
+	async onload(): Promise<void> {
 		await this.loadSettings();
 
-		const run_obligator = async () => {
+		const run_obligator = async (): Promise<void> => {
 
 			// ----------------------------------------------------------------
 			// Basic logical overview
@@ -120,10 +158,10 @@ export default class Obligator extends Plugin {
 			let template_contents = await this.app.vault.read(TEMPLATE_FILE);
 
 			// Make sure the initial / terminal settings are valid.
-			if (this.settings.initial === null || this.settings.initial === undefined) {
+			if (!this.settings.initial) {
 				this.settings.initial = "";
 			}
-			if (this.settings.terminal === null || this.settings.terminal === undefined) {
+			if (!this.settings.terminal) {
 				this.settings.terminal = "";
 			}
 			await this.saveSettings();
@@ -147,18 +185,18 @@ export default class Obligator extends Plugin {
 			}
 
 			// Make sure the default value is applied if it's left blank
-			const NOW = window.moment();
+			const NOW: Moment = window.moment();
 			const DATE_FORMAT = this.settings.date_format || DEFAULT_SETTINGS.date_format;
 			const ARCHIVE_DATE_FORMAT = this.settings.archive_date_format || DEFAULT_SETTINGS.archive_date_format;
 			const NOTE_NAME = NOW.format(DATE_FORMAT);
-			const ACTIVE_LEAF = this.app.workspace.getLeaf();
+			const ACTIVE_LEAF: WorkspaceLeaf = this.app.workspace.getLeaf();
 
 			// ----------------------------------------------------------------
 			// Step 2
 			// Context: settings are valid
 			// ----------------------------------------------------------------
-			const NEW_NOTE_PATH = `${this.settings.note_path}/${NOTE_NAME}.md`
-			let output_file = this.app.vault.getAbstractFileByPath(NEW_NOTE_PATH);
+			const NEW_NOTE_PATH = `${this.settings.note_path}/${NOTE_NAME}.md`;
+			let output_file: TAbstractFile | null = this.app.vault.getAbstractFileByPath(NEW_NOTE_PATH);
 			if (output_file != undefined && output_file instanceof TFile) {
 				await ACTIVE_LEAF.openFile(output_file);
 				return;
@@ -169,30 +207,30 @@ export default class Obligator extends Plugin {
 			// Context: settings are valid, new note doesn't exist.
 			// ----------------------------------------------------------------
 			// Get a list of all the files in the daily notes directory
-			const find_all_notes = (path) => {
+			const find_all_notes = (path: string): TFile[] => {
 				const abstract = this.app.vault.getAbstractFileByPath(normalizePath(path));
-				let notes = [];
+				let notes: TFile[] = [];
 				if (abstract instanceof TFile && abstract.extension === "md") {
 					notes.push(abstract);
 				} else if (abstract instanceof TFolder) {
-					for (let child of abstract.children) {
+					for (const child of abstract.children) {
 						notes = notes.concat(find_all_notes(`${path}/${child.name}`));
 					}
 				}
 				return notes;
-			}
+			};
 			const notes = find_all_notes(this.settings.note_path);
 			notes.sort((a, b) => {
 				const a_name = a.path.slice(this.settings.note_path.length + 1);
 				const b_name = b.path.slice(this.settings.note_path.length + 1);
 				return window.moment(b_name, this.settings.date_format).valueOf()
-					 - window.moment(a_name, this.settings.date_format).valueOf();
+					- window.moment(a_name, this.settings.date_format).valueOf();
 			});
 
 			// Get the last note that's not today's.
-			let last_note = null;
-			let last_note_moment = null;
-			for (let i=0; i < notes.length; i++) {
+			let last_note: TFile | null = null;
+			let last_note_moment: Moment | null = null;
+			for (let i = 0; i < notes.length; i++) {
 				// Remove the ".md" extension
 				const sub_path = notes[i].path.slice(this.settings.note_path.length + 1).slice(0, -3);
 				// The final boolean makes the moment parse in strict mode
@@ -204,13 +242,13 @@ export default class Obligator extends Plugin {
 				}
 			}
 
-			let last_note_structure = null;
-			let last_note_section_lines = null;
-			let last_note_remaining_lines = null;
+			let last_note_structure: Structure | null = null;
+			let last_note_section_lines: string[] | null = null;
+			let last_note_remaining_lines: string[] | null = null;
 
 			if (last_note) {
 				const last_note_content = await this.app.vault.read(last_note);
-				const {lines: last_note_all_lines} = split_lines(last_note_content);
+				const { lines: last_note_all_lines } = split_lines(last_note_content);
 				const last_note_lines = strip_frontmatter(last_note_all_lines);
 				let last_note_initial_index = last_note_lines.indexOf(this.settings.initial);
 				if (this.settings.initial === "") {
@@ -227,7 +265,7 @@ export default class Obligator extends Plugin {
 					return;
 				}
 				last_note_section_lines = last_note_lines.slice(last_note_initial_index, last_note_terminal_index);
-				last_note_structure = structurize(last_note_section_lines)
+				last_note_structure = structurize(last_note_section_lines);
 
 				// The lines which should stay behind are worked out in step 5,
 				// once the template tells us which to-dos are excluded from
@@ -245,10 +283,10 @@ export default class Obligator extends Plugin {
 			// ------------------------------------------------------------
 			template_contents = template_contents.replace(/{{\s*date:?(.*?)\s*}}/g, (_, format) => {
 				if (format) {
-					return NOW.format(format)
+					return NOW.format(format);
 				} else {
 					// default format
-					return NOW.format("YYYY-MM-DD")
+					return NOW.format("YYYY-MM-DD");
 				}
 			});
 
@@ -257,10 +295,10 @@ export default class Obligator extends Plugin {
 			// ------------------------------------------------------------
 			template_contents = template_contents.replace(/{{\s*time:?(.*?)\s*}}/g, (_, format) => {
 				if (format) {
-					return NOW.format(format)
+					return NOW.format(format);
 				} else {
 					// default format
-					return NOW.format("HH:mm")
+					return NOW.format("HH:mm");
 				}
 			});
 
@@ -283,8 +321,8 @@ export default class Obligator extends Plugin {
 			// ------------------------------------------------------------
 			// {{ obligate }} macro
 			// ------------------------------------------------------------
-			const template_lines = template_contents.split('\n')
-			let processed_lines = [];
+			const template_lines = template_contents.split('\n');
+			const processed_lines: string[] = [];
 			for (let i = 0; i < template_lines.length; i++) {
 				const line = template_lines[i];
 				// If this is an obligator line, then go ahead and run the
@@ -315,7 +353,7 @@ export default class Obligator extends Plugin {
 						}
 						processed_lines.push(template_lines[i]);
 					}
-				// Not an obligator line, so just add it.
+					// Not an obligator line, so just add it.
 				} else {
 					processed_lines.push(line);
 				}
@@ -335,9 +373,9 @@ export default class Obligator extends Plugin {
 				new Notice(`${TEMPLATE_FILE.basename} does not contain the specified terminal heading... aborting.`);
 				return;
 			}
-			let template_structure = structurize(processed_lines.slice(processed_initial_index, processed_terminal_index));
-			const OUTPUT_INITIAL_LINES = processed_lines.slice(0, processed_initial_index)
-			const OUTPUT_TERMINAL_LINES = processed_lines.slice(processed_terminal_index)
+			const template_structure = structurize(processed_lines.slice(processed_initial_index, processed_terminal_index));
+			const OUTPUT_INITIAL_LINES = processed_lines.slice(0, processed_initial_index);
+			const OUTPUT_TERMINAL_LINES = processed_lines.slice(processed_terminal_index);
 
 			// To-dos which the template already provides are not rolled over
 			// from the previous note; the template's own copy is used instead.
@@ -347,10 +385,10 @@ export default class Obligator extends Plugin {
 			// stripped, so yesterday's "- [x] Wake early !STREAK" still matches
 			// the template's "- [ ] Wake early !STREAK".
 			const template_task_texts = this.settings.dont_rollover_template
-				? collect_unfinished_task_texts(template_structure, new Set())
-				: new Set();
+				? collect_unfinished_task_texts(template_structure, new Set<string>())
+				: new Set<string>();
 
-			const skip_rollover = (line) => {
+			const skip_rollover = (line: string): boolean => {
 				if (template_task_texts.size === 0) return false;
 				if (this.settings.dont_rollover_only_habit
 					&& !HABIT_TAG_REGEX.test(line)) {
@@ -392,9 +430,9 @@ export default class Obligator extends Plugin {
 			if (last_note_structure) {
 				if (this.settings.keep_template_headings) {
 					filter_structure(last_note_structure,
-									 this.settings.delete_empty_headings,
-									 this.settings.keep_until_parent_complete,
-									 this.settings.move_todos);
+						this.settings.delete_empty_headings,
+						this.settings.keep_until_parent_complete,
+						this.settings.move_todos);
 				}
 				merge_structure(
 					template_structure,
@@ -419,9 +457,9 @@ export default class Obligator extends Plugin {
 			// Delete from the merged structure is false
 			if (!this.settings.keep_template_headings) {
 				filter_structure(template_structure,
-								 this.settings.delete_empty_headings,
-								 this.settings.keep_until_parent_complete,
-								 this.settings.move_todos);
+					this.settings.delete_empty_headings,
+					this.settings.keep_until_parent_complete,
+					this.settings.move_todos);
 			}
 
 			// Bring the closest due dates to the top of each heading.
@@ -429,14 +467,14 @@ export default class Obligator extends Plugin {
 				sort_structure_by_due(template_structure, NOW.toDate());
 			}
 
-			let new_note_lines = OUTPUT_INITIAL_LINES.concat(destructure(template_structure)).concat(OUTPUT_TERMINAL_LINES);
+			const new_note_lines = OUTPUT_INITIAL_LINES.concat(destructure(template_structure)).concat(OUTPUT_TERMINAL_LINES);
 
-			const directories = NEW_NOTE_PATH.split('/').slice(0,-1);
+			const directories = NEW_NOTE_PATH.split('/').slice(0, -1);
 			for (let i = 1; i <= directories.length; i++) {
-				const sub_path = directories.slice(0,i).join('/');
+				const sub_path = directories.slice(0, i).join('/');
 				const abstract = this.app.vault.getAbstractFileByPath(normalizePath(sub_path));
 				if (abstract === null) {
-					this.app.vault.createFolder(sub_path);
+					void this.app.vault.createFolder(sub_path);
 				}
 			}
 
@@ -470,13 +508,13 @@ export default class Obligator extends Plugin {
 			if (this.settings.archive && last_note) {
 
 				const last_note_name = last_note.path.slice(this.settings.note_path.length + 1);
-				const last_note_moment = window.moment(last_note_name, this.settings.date_format);
-				const archive_note_name = last_note_moment.format(ARCHIVE_DATE_FORMAT);
+				const archive_moment = window.moment(last_note_name, this.settings.date_format);
+				const archive_note_name = archive_moment.format(ARCHIVE_DATE_FORMAT);
 				const archive_note_path = `${this.settings.archive_path}/${archive_note_name}.md`;
 				try {
-					const archive_directories = archive_note_path.split('/').slice(0,-1);
+					const archive_directories = archive_note_path.split('/').slice(0, -1);
 					for (let i = 1; i <= archive_directories.length; i++) {
-						const sub_path = archive_directories.slice(0,i).join('/');
+						const sub_path = archive_directories.slice(0, i).join('/');
 						const abstract = this.app.vault.getAbstractFileByPath(normalizePath(sub_path));
 						if (abstract === null) {
 							await this.app.vault.createFolder(sub_path);
@@ -504,7 +542,7 @@ export default class Obligator extends Plugin {
 		this.app.workspace.onLayoutReady(async () => {
 			// Run obligator if the user has enabled the startup setting.
 			if (this.settings.run_on_startup) {
-				run_obligator();
+				void run_obligator();
 			}
 		});
 
@@ -515,9 +553,9 @@ export default class Obligator extends Plugin {
 		// run when the note is rendered. Re-render open reading views when a
 		// setting changes, debounced so typing a moment format does not
 		// re-render every open note on each keystroke.
-		this.refresh_reading_views = debounce(() => {
+		this.refresh_reading_views = debounce<[], void>(() => {
 			for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-				const view = leaf.view;
+				const view = leaf.view as MarkdownView;
 				if (view && view.getMode?.() === "preview") {
 					view.previewMode?.rerender(true);
 				}
@@ -537,7 +575,7 @@ export default class Obligator extends Plugin {
 		// the marker again.
 		register_completion_annotations(this);
 
-		const invalidate_streaks = () => {
+		const invalidate_streaks = (): void => {
 			clear_streak_cache();
 			refresh_live_preview_streaks();
 		};
@@ -548,12 +586,12 @@ export default class Obligator extends Plugin {
 
 	}
 
-	onunload() {
+	onunload(): void {
 		this.refresh_reading_views?.cancel();
 	}
 
-	async loadSettings() {
-		const data = await this.loadData();
+	async loadSettings(): Promise<void> {
+		const data = await this.loadData() as (Partial<ObligatorSettings> & { due_pill_format?: string }) | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
 		// Migrate the old two-option "Due pill text" setting to the new
 		// wording/type pair so existing vaults keep roughly the same pills.
@@ -565,7 +603,7 @@ export default class Obligator extends Plugin {
 		delete this.settings.due_pill_format;
 	}
 
-	async saveSettings(changed_key) {
+	async saveSettings(changed_key?: string): Promise<void> {
 		// Streak resolution only depends on where notes live and how their dates
 		// are formatted. Cosmetic settings should not throw away the cache and
 		// recompute streaks across the vault.
@@ -591,14 +629,17 @@ export default class Obligator extends Plugin {
 }
 
 class ObligatorSettingTab extends PluginSettingTab {
-	constructor(app, plugin) {
+	plugin: Obligator;
+	private _headingOptions: Record<string, string>;
+
+	constructor(app: App, plugin: Obligator) {
 		super(app, plugin);
 		this.plugin = plugin;
 		this._headingOptions = { "": "(none)" };
 		void this.refreshHeadings();
 	}
 
-	async getHeadings(file_path) {
+	async getHeadings(file_path: string): Promise<string[]> {
 		if (!file_path) return [];
 		let file = this.app.vault.getAbstractFileByPath(file_path);
 		if (file === null) {
@@ -609,16 +650,16 @@ class ObligatorSettingTab extends PluginSettingTab {
 		return Array.from(content.matchAll(HEADING_REGEX_GLOBAL), (match) => match[0]);
 	}
 
-	headingOptions() {
-		const options = { "": "(none)", ...this._headingOptions };
-		for (const key of ["initial", "terminal"]) {
+	headingOptions(): Record<string, string> {
+		const options: Record<string, string> = { "": "(none)", ...this._headingOptions };
+		for (const key of ["initial", "terminal"] as const) {
 			const value = this.plugin.settings[key];
 			if (value && !options[value]) options[value] = value;
 		}
 		return options;
 	}
 
-	async refreshHeadings() {
+	async refreshHeadings(): Promise<void> {
 		try {
 			const headings = await this.getHeadings(this.plugin.settings.template_path);
 			this._headingOptions = {};
@@ -631,11 +672,12 @@ class ObligatorSettingTab extends PluginSettingTab {
 		if (typeof this.update === "function") this.update();
 	}
 
-	async setControlValue(key, value) {
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		const settings = this.plugin.settings as unknown as Record<string, unknown>;
 		if (key === "initial" || key === "terminal") {
-			this.plugin.settings[key] = value || "";
+			settings[key] = (value as string) || "";
 		} else {
-			this.plugin.settings[key] = value;
+			settings[key] = value;
 		}
 		await this.plugin.saveSettings(key);
 		if (key === "template_path") {
@@ -643,9 +685,9 @@ class ObligatorSettingTab extends PluginSettingTab {
 		}
 	}
 
-	renderMomentFormat(setting, key, defaultFormat, sampleLabel) {
+	renderMomentFormat(setting: Setting, key: MomentSettingKey, defaultFormat: string, sampleLabel: string): void {
 		setting.controlEl.empty();
-		let formatter;
+		let formatter!: MomentFormatComponent;
 		setting.addMomentFormat((format) => {
 			formatter = format
 				.setDefaultFormat(defaultFormat)
@@ -670,22 +712,22 @@ class ObligatorSettingTab extends PluginSettingTab {
 		);
 	}
 
-	getSettingDefinitions() {
+	getSettingDefinitions(): SettingDefinitionItem[] {
 		const headings = this.headingOptions();
 		// Every setting gets its own card. A parent setting and the settings that
 		// depend on it share one card, so the relationship is obvious without
 		// having to read every description.
-		const card = (definition) => ({
+		const card = (definition: SettingDefinitionInput): SettingDefinitionGroup => ({
 			type: "group",
 			cls: "obligator-setting-card",
 			items: [definition],
 		});
-		const paired = (...definitions) => ({
+		const paired = (...definitions: SettingDefinitionInput[]): SettingDefinitionGroup => ({
 			type: "group",
 			cls: "obligator-setting-card obligator-paired-setting",
 			items: definitions,
 		});
-		const section = (heading) => ({
+		const section = (heading: string): SettingDefinitionItem => ({
 			type: "group",
 			cls: "obligator-setting-section",
 			heading,
