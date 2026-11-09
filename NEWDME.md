@@ -57,11 +57,12 @@ these commands work with nested folder date formats such as
 If you are used to Vim's `:w`, Daily Todos adds a **w: Save note** command. It
 saves the active note the same way `Ctrl+S` does.
 
-The command name starts with `w` so that typing `w` in the command palette
-selects it first. That makes a `:w`-style workflow reliable in reading view:
-open the command palette, type `w`, and press `Enter`. In reading view the note
-is normally already saved, so the command simply leaves the file as it is
-rather than doing something else.
+The command is registered without the usual `Daily Todos:` prefix, so its name
+really starts with `w` and typing `w` in the command palette selects it first.
+That makes a `:w`-style workflow reliable in reading view: open the command
+palette, type `w`, and press `Enter`. In reading view the note is normally
+already saved, so the command simply leaves the file as it is rather than doing
+something else.
 
 ### Moving to-dos out of the previous note
 By default Daily Todos *moves* unfinished to-dos: they are added to the new note

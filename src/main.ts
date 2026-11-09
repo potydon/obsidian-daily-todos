@@ -96,6 +96,20 @@ type RenderSettingDefinition = SettingDefinitionRender & {
 
 type SettingDefinitionInput = SettingDefinition | RenderSettingDefinition;
 
+// `Plugin.addCommand` prefixes every command with the plugin name, which puts
+// the leading "w" of the save command far too late for the command palette's
+// fuzzy ranking. This slice of the internal command registry lets that one
+// command keep a name that starts with "w".
+interface CommandRegistry {
+	addCommand(command: {
+		id: string;
+		name: string;
+		icon?: string;
+		callback: () => void;
+	}): void;
+	removeCommand(id: string): void;
+}
+
 export default class Obligator extends Plugin {
 	settings: ObligatorSettings = { ...DEFAULT_SETTINGS };
 	refresh_reading_views?: Debouncer<[], void>;
@@ -553,12 +567,18 @@ export default class Obligator extends Plugin {
 		// A save command whose name starts with "w" so that typing "w" in the
 		// command palette selects it (the same idea as Vim's :w). The palette
 		// shows the part before ": " as a prefix, so this reads "w | Save note".
-		this.addCommand({
-			id: "obligator-save-note",
+		// Registered directly instead of with `this.addCommand` because that
+		// would prepend "Daily Todos: ", leaving "w" behind built-in commands
+		// in the fuzzy ranking.
+		const SAVE_COMMAND_ID = "daily-todos:save-note";
+		const commands = (this.app as App & { commands: CommandRegistry }).commands;
+		commands.addCommand({
+			id: SAVE_COMMAND_ID,
 			name: "w: Save note",
 			icon: "save",
-			callback: () => this.save_active_note()
+			callback: () => { void this.save_active_note(); }
 		});
+		this.register(() => commands.removeCommand(SAVE_COMMAND_ID));
 
 		this.app.workspace.onLayoutReady(async () => {
 			// Run obligator if the user has enabled the startup setting.
