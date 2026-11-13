@@ -49,14 +49,25 @@ function cache_key(file: TFile, name: string): string {
 
 // Parses the date of a daily note from its path.
 function get_note_moment(plugin: Obligator, file: TFile): Moment | null {
-	const note_path = plugin.settings.note_path || "";
-	let relative = file.path;
-	if (note_path && file.path.startsWith(note_path)) {
-		relative = file.path.slice(note_path.length + 1);
+	return plugin.note_date_for_path(file.path);
+}
+
+// The path of the daily note for a given day. In rolling mode only Today.md
+// and Yesterday.md exist, so every other day has no note.
+function note_path_for_date(plugin: Obligator, date: Moment): string | null {
+	const note_path = plugin.settings.note_path;
+	if (!note_path) return null;
+	if (plugin.settings.rolling_notes) {
+		const today = plugin.rolling_today_moment();
+		if (date.isSame(today, "day")) {
+			return normalizePath(`${note_path}/Today.md`);
+		}
+		if (date.isSame(today.clone().subtract(1, "day"), "day")) {
+			return normalizePath(`${note_path}/Yesterday.md`);
+		}
+		return null;
 	}
-	relative = relative.replace(/\.md$/, "");
-	const parsed = window.moment(relative, plugin.settings.date_format, true);
-	return parsed.isValid() ? parsed : null;
+	return normalizePath(`${note_path}/${date.format(plugin.settings.date_format)}.md`);
 }
 
 // Counts consecutive completed days strictly before the note's own date. The
@@ -66,16 +77,15 @@ async function compute_past_uncached(plugin: Obligator, file: TFile, name: strin
 	const note_date = get_note_moment(plugin, file);
 	if (!note_date) return 0;
 
-	const note_path = plugin.settings.note_path;
-	if (!note_path) return 0;
+	if (!plugin.settings.note_path) return 0;
 
 	let streak = 0;
 	let cursor = note_date.clone().startOf('day').subtract(1, 'day');
 	const visited = new Set<string>();
 	// 10 years is a generous upper bound and guarantees termination.
 	for (let guard = 0; guard < 3660; guard++) {
-		const relative = cursor.format(plugin.settings.date_format);
-		const path = normalizePath(`${note_path}/${relative}.md`);
+		const path = note_path_for_date(plugin, cursor);
+		if (!path) break;
 		// If the date format does not include the day, several days map to the
 		// same note; stop instead of counting it more than once.
 		if (visited.has(path)) break;

@@ -101,6 +101,10 @@ export interface ObligatorSettings {
 	date_format: string;
 	template_path: string;
 	note_path: string;
+	/** Use fixed Today.md / Yesterday.md names instead of date-named notes. */
+	rolling_notes: boolean;
+	/** Calendar day (YYYY-MM-DD) the current Today.md represents. */
+	rolling_today_date: string;
 	archive: boolean;
 	archive_path: string;
 	archive_date_format: string;

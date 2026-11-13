@@ -34,6 +34,36 @@ The archive function will not delete directories if you use this in combination
 with a nested directory structure. I suggest only using a nested structure for
 the archive date format.
 
+### Today and Yesterday note names
+
+If you prefer a single rolling page instead of one file per day, enable
+**Use Today and Yesterday note names**. Daily Todos then keeps exactly two
+notes directly in the New file directory:
+
+```
+<New file directory>/Today.md
+<New file directory>/Yesterday.md
+```
+
+* The first run creates `Today.md` from the template. If no rolling note exists
+  yet but the directory already contains date-named notes, unfinished to-dos
+  are rolled over from the newest one. If today's date-named note already
+  exists, it is renamed to `Today.md` instead, so nothing is lost when the
+  setting is switched on mid-day.
+* When you open today's note on a new day, `Today.md` is renamed to
+  `Yesterday.md` and a fresh `Today.md` is created from the template. Only two
+  files are kept, so the previous `Yesterday.md` is replaced. If archiving is
+  enabled, that old `Yesterday.md` is archived first.
+* The date format is ignored for file names in this mode. `!today`, `!tomorrow`
+  and `!yesterday` still resolve against the day each note represents, and
+  **Open yesterday's note** / **Go to previous/next daily note** move between
+  the two files.
+* Habit streaks can only look back through `Yesterday.md`, because older notes
+  do not exist in this mode.
+
+The setting is off by default, so date-named notes keep working exactly as
+before.
+
 ### Navigating daily notes
 
 Besides the carrot icon and **Open today's note**, Daily Todos adds four
@@ -54,15 +84,9 @@ these commands work with nested folder date formats such as
 
 ### Saving with `:w`
 
-If you are used to Vim's `:w`, Daily Todos adds a **w: Save note** command. It
-saves the active note the same way `Ctrl+S` does.
-
-The command is registered without the usual `Daily Todos:` prefix, so its name
-really starts with `w` and typing `w` in the command palette selects it first.
-That makes a `:w`-style workflow reliable in reading view: open the command
-palette, type `w`, and press `Enter`. In reading view the note is normally
-already saved, so the command simply leaves the file as it is rather than doing
-something else.
+The `w: Save note` command has moved to the **Vimium++** plugin. Install that
+plugin if you want a Vim-style `:w` workflow: open the command palette with `:`,
+type `w`, and press `Enter` to save the active note the same way `Ctrl+S` does.
 
 ### Moving to-dos out of the previous note
 By default Daily Todos *moves* unfinished to-dos: they are added to the new note

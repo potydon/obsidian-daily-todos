@@ -68,6 +68,8 @@ const DEFAULT_SETTINGS: ObligatorSettings = {
 	date_format: "YYYY-MM-DD",
 	template_path: "",
 	note_path: "",
+	rolling_notes: false,
+	rolling_today_date: "",
 	archive: false,
 	archive_path: "",
 	archive_date_format: "YYYY/MM-MMMM/YYYY-MM-DD",
@@ -95,20 +97,6 @@ type RenderSettingDefinition = SettingDefinitionRender & {
 };
 
 type SettingDefinitionInput = SettingDefinition | RenderSettingDefinition;
-
-// `Plugin.addCommand` prefixes every command with the plugin name, which puts
-// the leading "w" of the save command far too late for the command palette's
-// fuzzy ranking. This slice of the internal command registry lets that one
-// command keep a name that starts with "w".
-interface CommandRegistry {
-	addCommand(command: {
-		id: string;
-		name: string;
-		icon?: string;
-		callback: () => void;
-	}): void;
-	removeCommand(id: string): void;
-}
 
 export default class Obligator extends Plugin {
 	settings: ObligatorSettings = { ...DEFAULT_SETTINGS };
@@ -201,8 +189,11 @@ export default class Obligator extends Plugin {
 			// Make sure the default value is applied if it's left blank
 			const NOW: Moment = window.moment();
 			const DATE_FORMAT = this.settings.date_format || DEFAULT_SETTINGS.date_format;
-			const ARCHIVE_DATE_FORMAT = this.settings.archive_date_format || DEFAULT_SETTINGS.archive_date_format;
-			const NOTE_NAME = NOW.format(DATE_FORMAT);
+			// In rolling mode the two notes always live directly in the note
+			// folder and ignore the date format for their file names.
+			const ROLLING = this.settings.rolling_notes;
+			const NOTE_NAME = ROLLING ? "Today" : NOW.format(DATE_FORMAT);
+			const YESTERDAY_PATH = normalizePath(`${this.settings.note_path}/Yesterday.md`);
 			const ACTIVE_LEAF: WorkspaceLeaf = this.app.workspace.getLeaf();
 
 			// ----------------------------------------------------------------
@@ -212,35 +203,91 @@ export default class Obligator extends Plugin {
 			const NEW_NOTE_PATH = `${this.settings.note_path}/${NOTE_NAME}.md`;
 			let output_file: TAbstractFile | null = this.app.vault.getAbstractFileByPath(NEW_NOTE_PATH);
 			if (output_file != undefined && output_file instanceof TFile) {
-				await ACTIVE_LEAF.openFile(output_file);
-				return;
+				if (!ROLLING) {
+					await ACTIVE_LEAF.openFile(output_file);
+					return;
+				}
+				// Rolling mode: Today.md only counts as today's note when the
+				// recorded day matches. Otherwise it is yesterday's note now and
+				// is rolled below before a new Today.md is created.
+				const recorded = this.stored_rolling_date();
+				if (!recorded) {
+					// A pre-existing Today.md without a recorded day is treated as
+					// today's note, so enabling the mode never loses content.
+					this.settings.rolling_today_date = NOW.format("YYYY-MM-DD");
+					await this.saveSettings("rolling_today_date");
+					await ACTIVE_LEAF.openFile(output_file);
+					return;
+				}
+				if (recorded.isSame(NOW, "day")) {
+					await ACTIVE_LEAF.openFile(output_file);
+					return;
+				}
+			}
+
+			// Rolling mode: when the mode is switched on after today's date-named
+			// note was already created, adopt that note as Today.md instead of
+			// starting from an empty template.
+			if (ROLLING && !(output_file instanceof TFile)) {
+				const todays_date_note = this.app.vault.getAbstractFileByPath(
+					normalizePath(`${this.settings.note_path}/${NOW.format(DATE_FORMAT)}.md`)
+				);
+				if (todays_date_note instanceof TFile) {
+					await this.app.fileManager.renameFile(todays_date_note, NEW_NOTE_PATH);
+					this.settings.rolling_today_date = NOW.format("YYYY-MM-DD");
+					await this.saveSettings("rolling_today_date");
+					await ACTIVE_LEAF.openFile(todays_date_note);
+					return;
+				}
 			}
 
 			// ----------------------------------------------------------------
 			// Step 3
 			// Context: settings are valid, new note doesn't exist.
 			// ----------------------------------------------------------------
-			// Get a list of all the files in the daily notes directory
-			const notes = this.find_all_notes(this.settings.note_path);
-			notes.sort((a, b) => {
-				const a_name = a.path.slice(this.settings.note_path.length + 1);
-				const b_name = b.path.slice(this.settings.note_path.length + 1);
-				return window.moment(b_name, this.settings.date_format).valueOf()
-					- window.moment(a_name, this.settings.date_format).valueOf();
-			});
-
-			// Get the last note that's not today's.
 			let last_note: TFile | null = null;
 			let last_note_moment: Moment | null = null;
-			for (let i = 0; i < notes.length; i++) {
-				// Remove the ".md" extension
-				const sub_path = notes[i].path.slice(this.settings.note_path.length + 1).slice(0, -3);
-				// The final boolean makes the moment parse in strict mode
-				const note_moment = window.moment(sub_path, this.settings.date_format, true);
-				if (note_moment.isValid() && note_moment.isBefore(NOW, 'day')) {
-					last_note = notes[i];
-					last_note_moment = note_moment;
-					break;
+			// Today.md is only renamed once the new note is about to be created,
+			// so an abort earlier in the run leaves it untouched.
+			let pending_yesterday_rollover: TFile | null = null;
+			// The final archival step is skipped when the previous note is one of
+			// the two rolling files, since those stay in place by design.
+			let archive_last_note = true;
+
+			if (ROLLING) {
+				const today_file = output_file instanceof TFile ? output_file : null;
+				const yesterday_abstract = this.app.vault.getAbstractFileByPath(YESTERDAY_PATH);
+				const yesterday_file = yesterday_abstract instanceof TFile ? yesterday_abstract : null;
+				const recorded = this.stored_rolling_date();
+
+				if (today_file && recorded) {
+					// A new day has started: the old Today.md becomes Yesterday.md
+					// when the new note is created below.
+					last_note = today_file;
+					last_note_moment = recorded;
+					pending_yesterday_rollover = today_file;
+					archive_last_note = false;
+				} else if (yesterday_file) {
+					// Today.md is missing, so start the new day from Yesterday.md.
+					last_note = yesterday_file;
+					last_note_moment = recorded
+						? recorded.clone().subtract(1, "day")
+						: NOW.clone().subtract(1, "day");
+					archive_last_note = false;
+				} else {
+					// No rolling notes yet: pick up the newest date-named note so
+					// switching the mode on keeps the rollover going.
+					const latest = this.latest_note_before(NOW);
+					if (latest) {
+						last_note = latest.file;
+						last_note_moment = latest.date;
+					}
+				}
+			} else {
+				const latest = this.latest_note_before(NOW);
+				if (latest) {
+					last_note = latest.file;
+					last_note_moment = latest.date;
 				}
 			}
 
@@ -316,8 +363,12 @@ export default class Obligator extends Plugin {
 				template_contents = template_contents.replace(/{{\s*previous_note\s*}}/g, "");
 				template_contents = template_contents.replace(/{{\s*previous_note_path\s*}}/g, "");
 			} else {
-				template_contents = template_contents.replace(/{{\s*previous_note\s*}}/g, last_note.basename);
-				template_contents = template_contents.replace(/{{\s*previous_note_path\s*}}/g, last_note.path);
+				// The old Today.md has not been renamed yet, but it will be
+				// Yesterday.md by the time the new note exists.
+				const previous_note_name = pending_yesterday_rollover ? "Yesterday" : last_note.basename;
+				const previous_note_path = pending_yesterday_rollover ? YESTERDAY_PATH : last_note.path;
+				template_contents = template_contents.replace(/{{\s*previous_note\s*}}/g, previous_note_name);
+				template_contents = template_contents.replace(/{{\s*previous_note_path\s*}}/g, previous_note_path);
 			}
 
 			// ------------------------------------------------------------
@@ -335,11 +386,10 @@ export default class Obligator extends Plugin {
 					let should_trigger = should_trigger_obligation(line, NOW);
 					// If there is no source note, then we would only
 					// trigger above.
-					if (!should_trigger && last_note) {
+					if (!should_trigger && last_note && last_note_moment) {
 						// Walk forward from the source note date (+1) and
 						// check every skipped date.
-						const sub_path = last_note.path.slice(this.settings.note_path.length + 1);
-						let skipped_moment = window.moment(sub_path, this.settings.date_format);
+						let skipped_moment = last_note_moment.clone();
 						while (skipped_moment.add(1, 'd').isBefore(NOW) && !should_trigger) {
 							should_trigger = should_trigger_obligation(line, skipped_moment);
 						}
@@ -471,6 +521,25 @@ export default class Obligator extends Plugin {
 
 			const new_note_lines = OUTPUT_INITIAL_LINES.concat(destructure(template_structure)).concat(OUTPUT_TERMINAL_LINES);
 
+			// Rolling mode: only now that the new note is ready does the old
+			// Today.md become Yesterday.md. Archive or replace the old
+			// Yesterday.md first so the rename has a free target.
+			if (pending_yesterday_rollover) {
+				const yesterday_abstract = this.app.vault.getAbstractFileByPath(YESTERDAY_PATH);
+				if (yesterday_abstract instanceof TFile) {
+					if (this.settings.archive && last_note_moment) {
+						await this.archive_note(yesterday_abstract, last_note_moment.clone().subtract(1, "day"));
+					}
+					// Archival may have been skipped because the target exists;
+					// the old Yesterday.md still has to make room for Today.md.
+					if (this.app.vault.getAbstractFileByPath(YESTERDAY_PATH) instanceof TFile) {
+						await this.app.vault.delete(yesterday_abstract);
+					}
+				}
+				await this.app.fileManager.renameFile(pending_yesterday_rollover, YESTERDAY_PATH);
+				pending_yesterday_rollover = null;
+			}
+
 			const directories = NEW_NOTE_PATH.split('/').slice(0, -1);
 			for (let i = 1; i <= directories.length; i++) {
 				const sub_path = directories.slice(0, i).join('/');
@@ -481,6 +550,13 @@ export default class Obligator extends Plugin {
 			}
 
 			output_file = await this.app.vault.create(NEW_NOTE_PATH, new_note_lines.join('\n'));
+
+			// Remember which day this Today.md represents, so the next run can
+			// tell whether a new day has started.
+			if (ROLLING) {
+				this.settings.rolling_today_date = NOW.format("YYYY-MM-DD");
+				await this.saveSettings("rolling_today_date");
+			}
 
 			// Open up the new file
 			if (output_file != undefined && output_file instanceof TFile) {
@@ -507,25 +583,8 @@ export default class Obligator extends Plugin {
 				});
 			}
 
-			if (this.settings.archive && last_note) {
-
-				const last_note_name = last_note.path.slice(this.settings.note_path.length + 1);
-				const archive_moment = window.moment(last_note_name, this.settings.date_format);
-				const archive_note_name = archive_moment.format(ARCHIVE_DATE_FORMAT);
-				const archive_note_path = `${this.settings.archive_path}/${archive_note_name}.md`;
-				try {
-					const archive_directories = archive_note_path.split('/').slice(0, -1);
-					for (let i = 1; i <= archive_directories.length; i++) {
-						const sub_path = archive_directories.slice(0, i).join('/');
-						const abstract = this.app.vault.getAbstractFileByPath(normalizePath(sub_path));
-						if (abstract === null) {
-							await this.app.vault.createFolder(sub_path);
-						}
-					}
-					await this.app.fileManager.renameFile(last_note, archive_note_path);
-				} catch (error) {
-					new Notice(`A file called ${archive_note_path} already exists, archival skipped.`);
-				}
+			if (this.settings.archive && archive_last_note && last_note && last_note_moment) {
+				await this.archive_note(last_note, last_note_moment);
 			}
 
 		};
@@ -563,22 +622,6 @@ export default class Obligator extends Plugin {
 			name: "Go to next daily note",
 			callback: () => this.open_neighbor_note(1)
 		});
-
-		// A save command whose name starts with "w" so that typing "w" in the
-		// command palette selects it (the same idea as Vim's :w). The palette
-		// shows the part before ": " as a prefix, so this reads "w | Save note".
-		// Registered directly instead of with `this.addCommand` because that
-		// would prepend "Daily Todos: ", leaving "w" behind built-in commands
-		// in the fuzzy ranking.
-		const SAVE_COMMAND_ID = "daily-todos:save-note";
-		const commands = (this.app as App & { commands: CommandRegistry }).commands;
-		commands.addCommand({
-			id: SAVE_COMMAND_ID,
-			name: "w: Save note",
-			icon: "save",
-			callback: () => { void this.save_active_note(); }
-		});
-		this.register(() => commands.removeCommand(SAVE_COMMAND_ID));
 
 		this.app.workspace.onLayoutReady(async () => {
 			// Run obligator if the user has enabled the startup setting.
@@ -646,20 +689,96 @@ export default class Obligator extends Plugin {
 	}
 
 	/**
-	 * The calendar day a daily note represents, read from its path relative to
-	 * the daily-note folder. Returns null for files that don't match the
-	 * configured date format.
+	 * The newest date-named note before `now`, used as the rollover source when
+	 * Today.md/Yesterday.md do not exist yet.
 	 */
-	note_date(file: TFile): Moment | null {
+	latest_note_before(now: Moment): { file: TFile; date: Moment } | null {
+		const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
+		const notes = this.find_all_notes(this.settings.note_path);
+		notes.sort((a, b) => {
+			const a_name = a.path.slice(this.settings.note_path.length + 1);
+			const b_name = b.path.slice(this.settings.note_path.length + 1);
+			return window.moment(b_name, date_format).valueOf()
+				- window.moment(a_name, date_format).valueOf();
+		});
+		for (const note of notes) {
+			// Remove the ".md" extension
+			const sub_path = note.path.slice(this.settings.note_path.length + 1).slice(0, -3);
+			// The final boolean makes the moment parse in strict mode
+			const note_moment = window.moment(sub_path, date_format, true);
+			if (note_moment.isValid() && note_moment.isBefore(now, "day")) {
+				return { file: note, date: note_moment };
+			}
+		}
+		return null;
+	}
+
+	/** The day recorded for Today.md, or null when it has never been set. */
+	stored_rolling_date(): Moment | null {
+		if (!this.settings.rolling_today_date) return null;
+		const date = window.moment(this.settings.rolling_today_date, "YYYY-MM-DD", true);
+		return date.isValid() ? date : null;
+	}
+
+	/** The day Today.md currently represents (today when nothing is recorded). */
+	rolling_today_moment(): Moment {
+		return this.stored_rolling_date() || window.moment().startOf("day");
+	}
+
+	/**
+	 * The calendar day a daily note represents, read from its path. Date-named
+	 * notes are parsed with the configured date format; rolling notes map
+	 * Today.md to the recorded day and Yesterday.md to the day before.
+	 * Returns null for files that are not daily notes.
+	 */
+	note_date_for_path(path: string): Moment | null {
 		const note_path = normalizePath(this.settings.note_path);
-		const prefix = note_path.endsWith("/") ? note_path : `${note_path}/`;
-		if (!file.path.startsWith(prefix) || !file.path.endsWith(".md")) {
+		if (!note_path || !path.endsWith(".md")) {
 			return null;
 		}
-		const name = file.path.slice(prefix.length, -3);
+		const prefix = note_path.endsWith("/") ? note_path : `${note_path}/`;
+		if (!path.startsWith(prefix)) {
+			return null;
+		}
+		if (this.settings.rolling_notes) {
+			const today = this.rolling_today_moment();
+			if (path === `${prefix}Today.md`) return today;
+			if (path === `${prefix}Yesterday.md`) return today.clone().subtract(1, "day");
+			return null;
+		}
+		const name = path.slice(prefix.length, -3);
 		const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
 		const date = window.moment(name, date_format, true);
 		return date.isValid() ? date : null;
+	}
+
+	note_date(file: TFile): Moment | null {
+		return this.note_date_for_path(file.path);
+	}
+
+	/** Move a note into the archive directory, creating its folders first. */
+	async archive_note(file: TFile, date: Moment): Promise<boolean> {
+		if (!this.settings.archive_path) {
+			new Notice("The archive path must be specified when the archive option is turned on, archival skipped.");
+			return false;
+		}
+		const format = this.settings.archive_date_format || DEFAULT_SETTINGS.archive_date_format;
+		const archive_note_path = `${this.settings.archive_path}/${date.format(format)}.md`;
+		try {
+			const archive_directories = archive_note_path.split('/').slice(0, -1);
+			for (let i = 1; i <= archive_directories.length; i++) {
+				const sub_path = archive_directories.slice(0, i).join('/');
+				const abstract = this.app.vault.getAbstractFileByPath(normalizePath(sub_path));
+				if (abstract === null) {
+					await this.app.vault.createFolder(sub_path);
+				}
+			}
+			await this.app.fileManager.renameFile(file, archive_note_path);
+			return true;
+		} catch (error) {
+			new Notice(`A file called ${archive_note_path} already exists, archival skipped.`);
+			return false;
+		}
 	}
 
 	private has_note_path(): boolean {
@@ -675,8 +794,20 @@ export default class Obligator extends Plugin {
 	 * note was found.
 	 */
 	async open_note_for_date(date: Moment): Promise<boolean> {
-		const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
-		const note_path = `${this.settings.note_path}/${date.format(date_format)}.md`;
+		let note_path: string;
+		if (this.settings.rolling_notes) {
+			const today = this.rolling_today_moment();
+			if (date.isSame(today, "day")) {
+				note_path = `${this.settings.note_path}/Today.md`;
+			} else if (date.isSame(today.clone().subtract(1, "day"), "day")) {
+				note_path = `${this.settings.note_path}/Yesterday.md`;
+			} else {
+				return false;
+			}
+		} else {
+			const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
+			note_path = `${this.settings.note_path}/${date.format(date_format)}.md`;
+		}
 		const file = this.app.vault.getAbstractFileByPath(normalizePath(note_path));
 		if (!(file instanceof TFile)) {
 			return false;
@@ -690,8 +821,14 @@ export default class Obligator extends Plugin {
 		if (!this.has_note_path()) return;
 		const date = window.moment().add(offset, "day");
 		if (!await this.open_note_for_date(date)) {
-			const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
-			new Notice(`No daily note exists for ${date.format(date_format)}.`);
+			if (this.settings.rolling_notes) {
+				new Notice(offset < 0
+					? "No Yesterday note exists yet."
+					: "Today/Yesterday mode only keeps a note for yesterday and today.");
+			} else {
+				const date_format = this.settings.date_format || DEFAULT_SETTINGS.date_format;
+				new Notice(`No daily note exists for ${date.format(date_format)}.`);
+			}
 		}
 	}
 
@@ -739,21 +876,6 @@ export default class Obligator extends Plugin {
 		}
 	}
 
-	/**
-	 * Save the active note. `MarkdownView.save` is the same routine Obsidian
-	 * uses for Ctrl+S: it writes the current view data when it differs from the
-	 * last saved version. In reading view there is usually nothing pending, so
-	 * the command simply behaves as a no-op instead of doing something else.
-	 */
-	async save_active_note(): Promise<void> {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!view) {
-			new Notice("There is no note open to save.");
-			return;
-		}
-		await view.save();
-	}
-
 	async loadSettings(): Promise<void> {
 		const data = await this.loadData() as (Partial<ObligatorSettings> & { due_pill_format?: string }) | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
@@ -774,6 +896,8 @@ export default class Obligator extends Plugin {
 		const streak_keys = [
 			"note_path",
 			"date_format",
+			"rolling_notes",
+			"rolling_today_date",
 			"archive",
 			"archive_path",
 			"archive_date_format"
@@ -847,6 +971,9 @@ class ObligatorSettingTab extends PluginSettingTab {
 		if (key === "template_path") {
 			void this.refreshHeadings();
 		}
+		if (key === "rolling_notes" && typeof this.update === "function") {
+			this.update();
+		}
 	}
 
 	renderMomentFormat(setting: Setting, key: MomentSettingKey, defaultFormat: string, sampleLabel: string): void {
@@ -904,6 +1031,11 @@ class ObligatorSettingTab extends PluginSettingTab {
 				control: { type: "folder", key: "note_path" },
 			}),
 			card({
+				name: "Use Today and Yesterday note names",
+				desc: "Create two notes, Today.md and Yesterday.md, directly in the New file directory instead of date-named notes. When a new day starts, Today.md is renamed to Yesterday.md (the old Yesterday.md is replaced or archived) and a fresh Today.md is created from the template. The date format is not used for file names in this mode.",
+				control: { type: "toggle", key: "rolling_notes" },
+			}),
+			card({
 				name: "Template file",
 				desc: "New daily notes will use the template file specified. It must be a Markdown file.",
 				control: {
@@ -914,6 +1046,7 @@ class ObligatorSettingTab extends PluginSettingTab {
 			}),
 			card({
 				name: "Date format",
+				disabled: () => this.plugin.settings.rolling_notes,
 				render: (setting) => this.renderMomentFormat(
 					setting,
 					"date_format",

@@ -146,13 +146,12 @@ function get_tooltip(token: DueToken, resolved: ResolvedLine, now: Date): string
 // Aliases (!today, !tomorrow, !yesterday) are relative to the daily note they
 // are written in, not to the moment the note happens to be viewed. That keeps
 // them stable when a to-do rolls into the next note. Notes outside the daily
-// note folder fall back to the real current date.
+// note folder fall back to the real current date. Rolling notes (Today.md /
+// Yesterday.md) get their date from the plugin as well.
 function note_date(plugin: Obligator, path: string | undefined): Date | null {
-	const note_path = plugin.settings.note_path || '';
-	if (!note_path || !path || !path.startsWith(note_path + '/')) return null;
-	const relative = path.slice(note_path.length + 1).replace(/\.md$/, '');
-	const parsed = window.moment(relative, plugin.settings.date_format, true);
-	return parsed && parsed.isValid() ? parsed.toDate() : null;
+	if (!path) return null;
+	const parsed = plugin.note_date_for_path(path);
+	return parsed ? parsed.toDate() : null;
 }
 
 function reference_date(plugin: Obligator, path: string | undefined): Date {

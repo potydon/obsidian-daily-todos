@@ -34,6 +34,26 @@ The archive function will not delete directories if you use this in combination
 with a nested directory structure. I suggest only using a nested structure for
 the archive date format.
 
+### Today and Yesterday note names
+
+Enable **Use Today and Yesterday note names** to keep a single rolling page
+instead of one file per day. Daily Todos then places exactly two notes directly
+in the New file directory: `Today.md` and `Yesterday.md`.
+
+* The first run creates `Today.md` from the template, rolling over unfinished
+  to-dos from the newest date-named note if one exists. If today's date-named
+  note already exists, it is renamed to `Today.md` instead, so switching the
+  setting on mid-day keeps the note.
+* On a new day, `Today.md` is renamed to `Yesterday.md` and a fresh `Today.md`
+  is created. The previous `Yesterday.md` is replaced (or archived first when
+  archival is enabled), because only two files are kept.
+* The date format is ignored for file names in this mode. `!today`, `!tomorrow`
+  and `!yesterday` still resolve against the day each note represents, and the
+  daily-note navigation commands move between the two files.
+* Habit streaks can only look back through `Yesterday.md` in this mode.
+
+The setting is off by default, so date-named notes keep working as before.
+
 ### Moving to-dos out of the previous note
 By default Daily Todos *moves* unfinished to-dos: they are added to the new note
 and removed from the previous one, so the previous note becomes a record of what
