@@ -111,6 +111,8 @@ export interface ObligatorSettings {
 	delete_empty_headings: boolean;
 	keep_template_headings: boolean;
 	run_on_startup: boolean;
+	/** Open the resulting daily note after the startup rollover. */
+	open_note_on_startup: boolean;
 	keep_until_parent_complete: boolean;
 	move_todos: boolean;
 	dont_rollover_template: boolean;

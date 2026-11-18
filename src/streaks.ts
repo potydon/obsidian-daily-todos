@@ -332,8 +332,9 @@ function register_reading_view_streaks(plugin: Obligator): void {
 		for (const li of tasks) {
 			const text = extract_inline_text(li);
 			if (!HABIT_TAG_REGEX.test(text)) continue;
+			// A to-do may consist of the tag alone, so an empty habit name is
+			// valid and must still get a pill.
 			const name = habit_name(text);
-			if (!name) continue;
 
 			const input = li.querySelector<HTMLInputElement>('input[type="checkbox"]');
 			rendered.push({ li, name, input });
@@ -491,7 +492,6 @@ function register_live_preview_streaks(plugin: Obligator): void {
 			if (!HABIT_TAG_REGEX.test(text) || !TASK_LINE_REGEX.test(text)) return;
 
 			const name = habit_name(text);
-			if (!name) return;
 
 			// The note's own checkbox is read straight from the editor, so the
 			// pill changes the instant the box is toggled.

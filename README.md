@@ -117,35 +117,6 @@ keep a copy in both notes.
    * `{{ every year 2026-2028 }}` - every first day of 2026 through 2028
    * `{{ every 2026/3 year }}` - every 3rd year starting from 2026
 
-## Comparison with rollover-daily-todos
-I was motivated to create this project because my to-do list is extensive, with
-lots of formatting that I wanted to maintain between notes, but rollover-daily-todos
-copies *only* the unchecked to-do items and places them all into a specified
-header, killing all of the formatting.
-
-Here is a basic overview of the differences between the two:
-
-- Daily Todos rolls over all unchecked to-do items as well as all the formatting
-  that wraps them.
-
-- Rollover-daily-todos only copies unchecked to-do items, and places them under
-  one heading.
-
-- Daily Todos does not rely on the `Daily notes` or `Periodic notes` plugin.
-
-- Daily Todos has the {{ obligate * * * }} macro for automatically scheduling
-  to-do items in new notes.
-
-- Daily Todos has an old note archiving feature to keep your notes directory clean.
-
-- Daily Todos has the ability to delete empty headings to keep your daily note clean.
-
-- Daily Todos deals with nested to-do items hierarchically, so a checked parent with
-  any amount of unchecked children will get copied over wholly to preserve the
-  structure.
-
-- & More!
-
 ## Building
 * `npm install` (install dependencies)
 * `npm run build` (bundle the JavaScript source into `main.js`)

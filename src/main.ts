@@ -76,6 +76,7 @@ const DEFAULT_SETTINGS: ObligatorSettings = {
 	delete_empty_headings: true,
 	keep_template_headings: true,
 	run_on_startup: false,
+	open_note_on_startup: true,
 	keep_until_parent_complete: false,
 	move_todos: true,
 	dont_rollover_template: false,
@@ -105,7 +106,7 @@ export default class Obligator extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
-		const run_obligator = async (): Promise<void> => {
+		const run_obligator = async (open_note = true): Promise<void> => {
 
 			// ----------------------------------------------------------------
 			// Basic logical overview
@@ -204,7 +205,7 @@ export default class Obligator extends Plugin {
 			let output_file: TAbstractFile | null = this.app.vault.getAbstractFileByPath(NEW_NOTE_PATH);
 			if (output_file != undefined && output_file instanceof TFile) {
 				if (!ROLLING) {
-					await ACTIVE_LEAF.openFile(output_file);
+					if (open_note) await ACTIVE_LEAF.openFile(output_file);
 					return;
 				}
 				// Rolling mode: Today.md only counts as today's note when the
@@ -216,11 +217,11 @@ export default class Obligator extends Plugin {
 					// today's note, so enabling the mode never loses content.
 					this.settings.rolling_today_date = NOW.format("YYYY-MM-DD");
 					await this.saveSettings("rolling_today_date");
-					await ACTIVE_LEAF.openFile(output_file);
+					if (open_note) await ACTIVE_LEAF.openFile(output_file);
 					return;
 				}
 				if (recorded.isSame(NOW, "day")) {
-					await ACTIVE_LEAF.openFile(output_file);
+					if (open_note) await ACTIVE_LEAF.openFile(output_file);
 					return;
 				}
 			}
@@ -236,7 +237,7 @@ export default class Obligator extends Plugin {
 					await this.app.fileManager.renameFile(todays_date_note, NEW_NOTE_PATH);
 					this.settings.rolling_today_date = NOW.format("YYYY-MM-DD");
 					await this.saveSettings("rolling_today_date");
-					await ACTIVE_LEAF.openFile(todays_date_note);
+					if (open_note) await ACTIVE_LEAF.openFile(todays_date_note);
 					return;
 				}
 			}
@@ -559,7 +560,7 @@ export default class Obligator extends Plugin {
 			}
 
 			// Open up the new file
-			if (output_file != undefined && output_file instanceof TFile) {
+			if (open_note && output_file != undefined && output_file instanceof TFile) {
 				await ACTIVE_LEAF.openFile(output_file);
 			}
 
@@ -589,15 +590,30 @@ export default class Obligator extends Plugin {
 
 		};
 
+		// A rollover renames and rewrites notes, so the ribbon, the command and
+		// the automatic file-open check must never run two rollovers at once.
+		let rollover_running = false;
+		const rollover = async (open_note = true): Promise<void> => {
+			if (rollover_running) return;
+			rollover_running = true;
+			try {
+				await run_obligator(open_note);
+			} finally {
+				rollover_running = false;
+			}
+		};
+
 		// This creates an icon in the left ribbon.
 		// This function is called when the user clicks the icon.
-		this.addRibbonIcon('carrot', `Open today's Daily Todos`, run_obligator);
+		this.addRibbonIcon('carrot', `Open today's Daily Todos`, () => {
+			void rollover();
+		});
 
 		// Add the command to open today's Obligator note
 		this.addCommand({
 			id: "obligator-run",
 			name: "Open today's note",
-			callback: run_obligator
+			callback: () => rollover()
 		});
 
 		// Daily-note navigation. Yesterday and tomorrow only open notes that
@@ -623,10 +639,39 @@ export default class Obligator extends Plugin {
 			callback: () => this.open_neighbor_note(1)
 		});
 
+		// In Today/Yesterday mode the two files have fixed names, so they can be
+		// opened without the plugin: from the file explorer, a link or the quick
+		// switcher. Roll the day forward whenever one of them is opened while the
+		// recorded day is no longer today; otherwise the pair goes stale until
+		// the user happens to run the command.
+		const roll_if_stale = (file: TFile | null): void => {
+			// Do not rewrite notes while the workspace is still restoring.
+			if (!this.app.workspace.layoutReady) return;
+			if (this.should_roll_on_open(file)) {
+				void rollover();
+			}
+		};
+		this.registerEvent(this.app.workspace.on('file-open', roll_if_stale));
+		// Switching back to an already open note also counts as opening it,
+		// which matters when Obsidian stays open across midnight.
+		this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+			roll_if_stale(this.app.workspace.getActiveFile());
+		}));
+
 		this.app.workspace.onLayoutReady(async () => {
+			// A stale rolling note can be restored with the workspace, in which
+			// case no file-open event fires for it. This is still a startup
+			// rollover, so honour the "Open daily note on startup" sub-option
+			// when "Run on startup" is enabled.
+			if (this.should_roll_on_open(this.app.workspace.getActiveFile())) {
+				void rollover(
+					this.settings.run_on_startup ? this.settings.open_note_on_startup : true
+				);
+				return;
+			}
 			// Run obligator if the user has enabled the startup setting.
 			if (this.settings.run_on_startup) {
-				void run_obligator();
+				void rollover(this.settings.open_note_on_startup);
 			}
 		});
 
@@ -723,6 +768,24 @@ export default class Obligator extends Plugin {
 	/** The day Today.md currently represents (today when nothing is recorded). */
 	rolling_today_moment(): Moment {
 		return this.stored_rolling_date() || window.moment().startOf("day");
+	}
+
+	/**
+	 * Whether opening `file` should roll a stale Today/Yesterday pair forward.
+	 * Only the two rolling notes qualify, and only when the day recorded for
+	 * Today.md is no longer the current day.
+	 */
+	should_roll_on_open(file: TFile | null): boolean {
+		if (!file || !this.settings.rolling_notes || !this.settings.note_path) {
+			return false;
+		}
+		const note_path = normalizePath(this.settings.note_path);
+		if (file.path !== normalizePath(`${note_path}/Today.md`)
+			&& file.path !== normalizePath(`${note_path}/Yesterday.md`)) {
+			return false;
+		}
+		const recorded = this.stored_rolling_date();
+		return recorded !== null && !recorded.isSame(window.moment(), "day");
 	}
 
 	/**
@@ -925,6 +988,20 @@ class ObligatorSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 		this._headingOptions = { "": "(none)" };
 		void this.refreshHeadings();
+
+		// The heading dropdowns are built from the template. Keep them in sync
+		// while the template is edited instead of only refreshing them when the
+		// plugin loads or the template path changes.
+		this.plugin.registerEvent(this.app.vault.on('modify', (file) => {
+			if (this.is_template(file)) void this.refreshHeadings();
+		}));
+	}
+
+	private is_template(file: TAbstractFile): boolean {
+		const template_path = this.plugin.settings.template_path;
+		if (!template_path) return false;
+		const path = normalizePath(template_path);
+		return file.path === path || file.path === normalizePath(`${path}.md`);
 	}
 
 	async getHeadings(file_path: string): Promise<string[]> {
@@ -972,6 +1049,11 @@ class ObligatorSettingTab extends PluginSettingTab {
 			void this.refreshHeadings();
 		}
 		if (key === "rolling_notes" && typeof this.update === "function") {
+			this.update();
+		}
+		// The startup sub-option is disabled while "Run on startup" is off, so
+		// re-render when the parent toggle changes.
+		if (key === "run_on_startup" && typeof this.update === "function") {
 			this.update();
 		}
 	}
@@ -1036,15 +1118,6 @@ class ObligatorSettingTab extends PluginSettingTab {
 				control: { type: "toggle", key: "rolling_notes" },
 			}),
 			card({
-				name: "Template file",
-				desc: "New daily notes will use the template file specified. It must be a Markdown file.",
-				control: {
-					type: "file",
-					key: "template_path",
-					filter: (file) => file.extension === "md",
-				},
-			}),
-			card({
 				name: "Date format",
 				disabled: () => this.plugin.settings.rolling_notes,
 				render: (setting) => this.renderMomentFormat(
@@ -1054,31 +1127,55 @@ class ObligatorSettingTab extends PluginSettingTab {
 					"Today's note would look like this: "
 				),
 			}),
-			card({
-				name: "Initial heading",
-				desc: "The heading from the template which begins what Daily Todos will copy. Everything before this heading is ignored. If left blank, copying starts at the beginning of the file.",
-				control: {
-					type: "dropdown",
-					key: "initial",
-					options: headings,
-					defaultValue: "",
+      paired(
+        {
+          name: "Template file",
+          desc: "New daily notes will use the template file specified. It must be a Markdown file.",
+          control: {
+            type: "file",
+            key: "template_path",
+            filter: (file) => file.extension === "md",
+          },
+        },
+        {
+          name: "Initial heading",
+          desc: "The heading from the template which begins what Daily Todos will copy. Everything before this heading is ignored. If left blank, copying starts at the beginning of the file.",
+          control: {
+            type: "dropdown",
+            key: "initial",
+            options: headings,
+            defaultValue: "",
+            disabled: () => !this.plugin.settings.template_path
+          },
+        },
+        {
+          name: "Terminal heading",
+          desc: "The heading from the template which ends what Daily Todos will copy. Everything after this heading is ignored. If left blank, copying continues to the end of the file.",
+          control: {
+            type: "dropdown",
+            key: "terminal",
+            options: headings,
+            defaultValue: "",
+            disabled: () => !this.plugin.settings.template_path
+          },
+        }
+      ),
+			paired(
+				{
+					name: "Run on startup",
+					desc: "Run the rollover automatically when you open this vault, so today's note is ready even if you don't open it yourself.",
+					control: { type: "toggle", key: "run_on_startup" },
 				},
-			}),
-			card({
-				name: "Terminal heading",
-				desc: "The heading from the template which ends what Daily Todos will copy. Everything after this heading is ignored. If left blank, copying continues to the end of the file.",
-				control: {
-					type: "dropdown",
-					key: "terminal",
-					options: headings,
-					defaultValue: "",
-				},
-			}),
-			card({
-				name: "Open daily note on startup",
-				desc: "Open your daily note automatically when you open this vault.",
-				control: { type: "toggle", key: "run_on_startup" },
-			}),
+				{
+					name: "Open daily note on startup",
+					desc: "Open the daily note after the startup rollover. When disabled, the rollover still runs in the background.",
+					control: {
+						type: "toggle",
+						key: "open_note_on_startup",
+						disabled: () => !this.plugin.settings.run_on_startup,
+					},
+				}
+			),
 			section("Archive"),
 			paired(
 				{

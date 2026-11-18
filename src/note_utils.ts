@@ -137,6 +137,58 @@ export function destructure(structure: Structure): string[] {
 	return lines;
 }
 
+// A child line that only contains whitespace. Such lines carry the template's
+// spacing and should stay where the template put them.
+export function is_blank_line(child: StructureChild | undefined): boolean {
+	return typeof child === "string" && /^\s*$/.test(child);
+}
+
+// True for a section whose spacing is defined by the template: a to-do itself
+// or a heading that contains to-dos. Blank lines from the previous note must
+// not be merged into these, because insert_todo() moves the template's own
+// trailing blanks below the inserted to-do and the merge would immediately add
+// the previous note's blanks back above it.
+function template_controls_spacing(structure: Structure): boolean {
+	if (structure.text !== null && CHECKBOX_REGEX.test(structure.text)) {
+		return true;
+	}
+	return structure.children.some((child) =>
+		child instanceof Object && child.text !== null && CHECKBOX_REGEX.test(child.text));
+}
+
+// Inserts a rolled-over to-do before the section's trailing blank lines.
+// structurize attaches a blank line to the to-do above it, so that blank has
+// to be lifted out of the to-do and placed after the new one. Otherwise the
+// template's spacing ends up between two to-dos.
+function insert_todo(parent: Structure, child: Structure): void {
+	const heading_index = parent.children.findIndex((c) =>
+		c instanceof Object && c.text !== null && HEADING_REGEX.test(c.text));
+	let index = heading_index === -1 ? parent.children.length : heading_index;
+
+	while (index > 0 && is_blank_line(parent.children[index - 1])) {
+		index -= 1;
+	}
+
+	// Keep the blank lines that separate this section from the next heading
+	// below the inserted to-do instead of above it.
+	let blanks: Array<StructureChild | undefined> = [];
+	const previous = index > 0 ? parent.children[index - 1] : undefined;
+	if (previous instanceof Object && previous.text !== null
+		&& CHECKBOX_REGEX.test(previous.text)) {
+		let end = previous.children.length;
+		while (end > 0 && is_blank_line(previous.children[end - 1])) end -= 1;
+		blanks = previous.children.splice(end);
+	}
+
+	// The rolled-over to-do may bring its own trailing blank lines from the
+	// previous note. The template already defines the section's spacing.
+	let end = child.children.length;
+	while (end > 0 && is_blank_line(child.children[end - 1])) end -= 1;
+	child.children.splice(end);
+
+	parent.children.splice(index, 0, child, ...blanks);
+}
+
 // Merges second into first
 // Limitation: Parent paths have to be unique within the structure.
 export function merge_structure(first: Structure, second: Structure): Structure | void {
@@ -160,12 +212,7 @@ export function merge_structure(first: Structure, second: Structure): Structure 
 				first.total += first_child.total - old_total;
 			} else {
 				if (child.text && CHECKBOX_REGEX.test(child.text)) {
-					const heading_index = first.children.findIndex((c) => c instanceof Object && c.text && HEADING_REGEX.test(c.text));
-					if (heading_index > -1) {
-						first.children.splice(heading_index, 0, child);
-					} else {
-						first.children.push(child);
-					}
+					insert_todo(first, child);
 				} else {
 					first.children.push(child);
 					first.total += child.total + 1;
@@ -178,6 +225,11 @@ export function merge_structure(first: Structure, second: Structure): Structure 
 			const list = first.children as unknown as { contains(value: StructureChild | undefined): boolean };
 			if (!list.contains(child)) {
 				const heading_index = first.children.findIndex((c) => c instanceof Object && c.text && HEADING_REGEX.test(c.text));
+				// The template already provides the section's spacing. Adding
+				// the previous note's blank line here would double it up.
+				if (is_blank_line(child) && template_controls_spacing(first)) {
+					return;
+				}
 				if (heading_index > -1) {
 					first.children.splice(heading_index, 0, child);
 				} else {

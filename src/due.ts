@@ -1,4 +1,4 @@
-import { CHECKBOX_REGEX, TASK_LINE_REGEX } from './note_utils';
+import { CHECKBOX_REGEX, TASK_LINE_REGEX, is_blank_line } from './note_utils';
 import type {
 	CompletionOptions,
 	DateParts,
@@ -648,6 +648,15 @@ export function sort_structure_by_due(structure: Structure, now: Date): Structur
 	});
 
 	if (slots.length > 1) {
+		// structurize attaches the blank lines before the next heading to the
+		// last to-do. Detach them first, otherwise sorting carries them along
+		// with that to-do and the to-do which sorts last ends up below them.
+		const last_slot = slots[slots.length - 1];
+		const last_todo = structure.children[last_slot] as Structure;
+		let end = last_todo.children.length;
+		while (end > 0 && is_blank_line(last_todo.children[end - 1])) end -= 1;
+		const trailing_blanks = last_todo.children.splice(end);
+
 		const todos = slots.map((index) => structure.children[index] as Structure);
 		todos.sort((a, b) => {
 			const a_key = due_sort_key(a.text as string, now);
@@ -660,6 +669,12 @@ export function sort_structure_by_due(structure: Structure, now: Date): Structur
 		slots.forEach((slot, index) => {
 			structure.children[slot] = todos[index];
 		});
+
+		// Keep the section's spacing below the last to-do, where it was.
+		if (trailing_blanks.length > 0) {
+			const new_last = structure.children[last_slot] as Structure;
+			new_last.children.push(...trailing_blanks);
+		}
 	}
 
 	for (const child of structure.children) {

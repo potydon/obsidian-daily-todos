@@ -50,10 +50,13 @@ notes directly in the New file directory:
   are rolled over from the newest one. If today's date-named note already
   exists, it is renamed to `Today.md` instead, so nothing is lost when the
   setting is switched on mid-day.
-* When you open today's note on a new day, `Today.md` is renamed to
-  `Yesterday.md` and a fresh `Today.md` is created from the template. Only two
-  files are kept, so the previous `Yesterday.md` is replaced. If archiving is
-  enabled, that old `Yesterday.md` is archived first.
+* On a new day, opening either `Today.md` or `Yesterday.md` — from the file
+  explorer, a link, the quick switcher or **Open today's note** — rolls the
+  pair forward: the old `Today.md` is renamed to `Yesterday.md` and a fresh
+  `Today.md` is created from the template. The plugin remembers which day
+  `Today.md` represents, so it only rolls when that recorded day is no longer
+  today. Only two files are kept, so the previous `Yesterday.md` is replaced.
+  If archiving is enabled, that old `Yesterday.md` is archived first.
 * The date format is ignored for file names in this mode. `!today`, `!tomorrow`
   and `!yesterday` still resolve against the day each note represents, and
   **Open yesterday's note** / **Go to previous/next daily note** move between
@@ -63,6 +66,17 @@ notes directly in the New file directory:
 
 The setting is off by default, so date-named notes keep working exactly as
 before.
+
+### Running on startup
+
+**Run on startup** runs the rollover as soon as the vault opens, so today's
+note is created and unfinished to-dos are carried over even if you never open
+the note yourself. The nested **Open daily note on startup** option controls
+whether the resulting note is also opened and focused. With it off, the rollover
+happens in the background and the workspace keeps whatever note it restored.
+
+**Run on startup** is off by default. **Open daily note on startup** is on by
+default and only takes effect while **Run on startup** is enabled.
 
 ### Navigating daily notes
 
@@ -192,7 +206,8 @@ The pill shows a flame icon (from Lucide / Obsidian) alongside the streak count 
 fit roughly where the `!STREAK` tag was. The tag may appear anywhere in the line,
 so `- [x] !STREAK Wake early` works too, and the habit name is everything else on
 the line (case-insensitive, whitespace collapsed). So `Wake early` and
-`wAke eaRly` are the same habit.
+`wAke eaRly` are the same habit. The to-do may also consist of the tag alone
+(`- [ ] !STREAK`); it still gets a pill.
 
 The pill is a replacement for the tag, not an addition to it, so the caret
 never ends up in the middle of hidden text. In live preview the raw `!STREAK` is
